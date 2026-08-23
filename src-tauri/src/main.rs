@@ -9,6 +9,8 @@ use battery_dashboard_desktop::{
     scheduler::{SchedulerStatus, SystemdUserScheduler},
     storage,
 };
+use chrono::{Datelike, NaiveDate, TimeZone, Utc};
+use chrono_tz::Tz;
 use serde::Serialize;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -102,6 +104,335 @@ async fn get_recent_battery_history(
         gaps: mapped.gaps,
         summary,
     }
+}
+
+/// Returns derived sessions and calendar buckets from immutable local samples.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_battery_session_history(
+    battery_id: Option<String>,
+    states: Option<Vec<String>>,
+    start_date: Option<String>,
+    end_date: Option<String>,
+    timezone: String,
+) -> SessionHistoryResponse {
+    let Ok(timezone) = timezone.parse::<Tz>() else {
+        return unavailable_session_history("invalid-request", &timezone);
+    };
+    let Ok((start, end)) = session_date_range(timezone, start_date.as_deref(), end_date.as_deref())
+    else {
+        return unavailable_session_history("invalid-request", timezone.name());
+    };
+    let Some(path) = storage::existing_database_path().ok().flatten() else {
+        return unavailable_session_history(
+            recorder_unavailable_reason(recorder_state()),
+            timezone.name(),
+        );
+    };
+    let Ok(storage) = storage::Storage::open_at(path) else {
+        return unavailable_session_history("database-unavailable", timezone.name());
+    };
+    let query = storage::SessionQuery {
+        start,
+        end,
+        battery_id,
+    };
+    let Ok(sessions) = storage.sessions(&query) else {
+        return unavailable_session_history("database-unavailable", timezone.name());
+    };
+    let allowed = states
+        .as_ref()
+        .and_then(|values| normalize_session_states(values));
+    if states.is_some() && allowed.is_none() {
+        return unavailable_session_history("invalid-request", timezone.name());
+    }
+    let sessions = sessions
+        .into_iter()
+        .filter(|session| {
+            allowed
+                .as_ref()
+                .is_none_or(|allowed| allowed.contains(session_kind(session.kind)))
+        })
+        .collect::<Vec<_>>();
+    let daily = calendar_summaries(&sessions, timezone, "daily");
+    let weekly = calendar_summaries(&sessions, timezone, "weekly");
+    let monthly = calendar_summaries(&sessions, timezone, "monthly");
+    SessionHistoryResponse {
+        schema_version: 1,
+        availability: "available",
+        unavailable_reason: None,
+        generated_at: format_timestamp(OffsetDateTime::now_utc()),
+        timezone: timezone.name().to_owned(),
+        sessions: sessions
+            .into_iter()
+            .enumerate()
+            .map(|(index, session)| map_session(session, index))
+            .collect(),
+        daily,
+        weekly,
+        monthly,
+    }
+}
+
+/// Rebuilds derived sessions; raw samples remain append-only and untouched.
+#[tauri::command]
+fn rebuild_battery_session_history() -> SessionRebuildResponse {
+    let Some(path) = storage::existing_database_path().ok().flatten() else {
+        return SessionRebuildResponse::unavailable(recorder_unavailable_reason(recorder_state()));
+    };
+    match storage::Storage::open_at(path).and_then(|mut storage| storage.rebuild_sessions()) {
+        Ok(sessions_rebuilt) => SessionRebuildResponse {
+            schema_version: 1,
+            availability: "available",
+            unavailable_reason: None,
+            rebuilt_at: format_timestamp(OffsetDateTime::now_utc()),
+            sessions_rebuilt: Some(sessions_rebuilt),
+        },
+        Err(_) => SessionRebuildResponse::unavailable("database-unavailable"),
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionHistoryResponse {
+    schema_version: u8,
+    availability: &'static str,
+    unavailable_reason: Option<&'static str>,
+    generated_at: Option<String>,
+    timezone: String,
+    sessions: Vec<SessionDto>,
+    daily: Vec<CalendarDto>,
+    weekly: Vec<CalendarDto>,
+    monthly: Vec<CalendarDto>,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionDto {
+    id: String,
+    battery_id: Option<String>,
+    state: &'static str,
+    started_at: Option<String>,
+    ended_at: Option<String>,
+    duration_seconds: Option<f64>,
+    start_percentage: Option<f64>,
+    end_percentage: Option<f64>,
+    start_energy_wh: Option<f64>,
+    end_energy_wh: Option<f64>,
+    transferred_energy_wh: Option<f64>,
+    average_power_watts: Option<f64>,
+    peak_power_watts: Option<f64>,
+    completeness: &'static str,
+    boundary_reason: &'static str,
+}
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CalendarDto {
+    period: &'static str,
+    bucket: String,
+    timezone: String,
+    battery_id: Option<String>,
+    observed_energy_used_wh: Option<f64>,
+    observed_energy_charged_wh: Option<f64>,
+    minimum_percentage: Option<f64>,
+    maximum_percentage: Option<f64>,
+    representative_full_energy_wh: Option<f64>,
+    coverage_seconds: Option<f64>,
+    coverage_ratio: Option<f64>,
+    observed_samples: u64,
+}
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SessionRebuildResponse {
+    schema_version: u8,
+    availability: &'static str,
+    unavailable_reason: Option<&'static str>,
+    rebuilt_at: Option<String>,
+    sessions_rebuilt: Option<u64>,
+}
+impl SessionRebuildResponse {
+    fn unavailable(reason: &'static str) -> Self {
+        Self {
+            schema_version: 1,
+            availability: "unavailable",
+            unavailable_reason: Some(reason),
+            rebuilt_at: None,
+            sessions_rebuilt: None,
+        }
+    }
+}
+
+fn unavailable_session_history(reason: &'static str, timezone: &str) -> SessionHistoryResponse {
+    SessionHistoryResponse {
+        schema_version: 1,
+        availability: "unavailable",
+        unavailable_reason: Some(reason),
+        generated_at: None,
+        timezone: timezone.to_owned(),
+        sessions: Vec::new(),
+        daily: Vec::new(),
+        weekly: Vec::new(),
+        monthly: Vec::new(),
+    }
+}
+fn session_kind(kind: storage::BatterySessionKind) -> &'static str {
+    match kind {
+        storage::BatterySessionKind::Charging => "charging",
+        storage::BatterySessionKind::Discharging => "discharging",
+        storage::BatterySessionKind::Full => "full",
+        storage::BatterySessionKind::Unknown => "unknown",
+    }
+}
+fn normalize_session_states(values: &[String]) -> Option<BTreeSet<String>> {
+    let set = values.iter().cloned().collect::<BTreeSet<_>>();
+    (!set.is_empty()
+        && set.iter().all(|value| {
+            matches!(
+                value.as_str(),
+                "charging" | "discharging" | "full" | "unknown"
+            )
+        }))
+    .then_some(set)
+}
+fn map_session(session: storage::BatterySession, index: usize) -> SessionDto {
+    let energy = match (session.start_energy_wh, session.end_energy_wh) {
+        (Some(start), Some(end)) => Some(end - start),
+        _ => None,
+    };
+    SessionDto {
+        id: format!("{}:{}:{}", session.battery_id, session.started_at, index),
+        battery_id: Some(session.battery_id),
+        state: session_kind(session.kind),
+        started_at: Some(session.started_at),
+        ended_at: Some(session.ended_at),
+        duration_seconds: session.observed_duration_seconds,
+        start_percentage: session.start_percentage,
+        end_percentage: session.end_percentage,
+        start_energy_wh: session.start_energy_wh,
+        end_energy_wh: session.end_energy_wh,
+        transferred_energy_wh: energy,
+        average_power_watts: session.average_power_watts,
+        peak_power_watts: None,
+        completeness: if session.complete {
+            "complete"
+        } else {
+            "incomplete"
+        },
+        boundary_reason: match session.interrupt_reason {
+            storage::SessionInterruptReason::StateChanged => "state-change",
+            storage::SessionInterruptReason::BootChanged => "rebooted",
+            storage::SessionInterruptReason::SampleGap => "sampling-gap",
+            storage::SessionInterruptReason::DataEnded => "end-of-data",
+        },
+    }
+}
+
+fn session_date_range(
+    timezone: Tz,
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<(OffsetDateTime, OffsetDateTime), ()> {
+    let today = Utc::now().with_timezone(&timezone).date_naive();
+    let start = start
+        .map(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d"))
+        .transpose()
+        .map_err(|_| ())?
+        .unwrap_or(NaiveDate::from_ymd_opt(1970, 1, 1).expect("valid epoch date"));
+    let end = end
+        .map(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d"))
+        .transpose()
+        .map_err(|_| ())?
+        .unwrap_or(today);
+    if end < start {
+        return Err(());
+    }
+    let start = local_day_start(timezone, start)?;
+    let end = local_day_start(timezone, end.succ_opt().ok_or(())?)?;
+    let from_chrono = |value: chrono::DateTime<Utc>| {
+        OffsetDateTime::from_unix_timestamp(value.timestamp())
+            .map_err(|_| ())
+            .map(|value| value + time::Duration::nanoseconds(i64::from(value.nanosecond())))
+    };
+    Ok((from_chrono(start)?, from_chrono(end)?))
+}
+fn local_day_start(timezone: Tz, day: NaiveDate) -> Result<chrono::DateTime<Utc>, ()> {
+    (0..=4)
+        .find_map(|hour| {
+            timezone
+                .with_ymd_and_hms(day.year(), day.month(), day.day(), hour, 0, 0)
+                .earliest()
+        })
+        .map(|value| value.with_timezone(&Utc))
+        .ok_or(())
+}
+fn calendar_summaries(
+    sessions: &[storage::BatterySession],
+    timezone: Tz,
+    period: &'static str,
+) -> Vec<CalendarDto> {
+    let mut buckets = BTreeMap::<(String, String), CalendarDto>::new();
+    for session in sessions {
+        let Ok(start) = chrono::DateTime::parse_from_rfc3339(&session.started_at) else {
+            continue;
+        };
+        let local = start.with_timezone(&timezone);
+        let bucket = match period {
+            "daily" => local.format("%F").to_string(),
+            "weekly" => {
+                let week = local.iso_week();
+                format!("{:04}-W{:02}", week.year(), week.week())
+            }
+            _ => local.format("%Y-%m").to_string(),
+        };
+        let key = (bucket.clone(), session.battery_id.clone());
+        let entry = buckets.entry(key).or_insert_with(|| CalendarDto {
+            period,
+            bucket,
+            timezone: timezone.name().to_owned(),
+            battery_id: Some(session.battery_id.clone()),
+            observed_energy_used_wh: None,
+            observed_energy_charged_wh: None,
+            minimum_percentage: None,
+            maximum_percentage: None,
+            representative_full_energy_wh: None,
+            coverage_seconds: Some(0.0),
+            coverage_ratio: None,
+            observed_samples: 0,
+        });
+        entry.observed_samples += session.sample_count;
+        entry.coverage_seconds = match (entry.coverage_seconds, session.observed_duration_seconds) {
+            (Some(total), Some(value)) => Some(total + value),
+            _ => None,
+        };
+        entry.minimum_percentage = match (
+            entry.minimum_percentage,
+            session.start_percentage,
+            session.end_percentage,
+        ) {
+            (Some(current), Some(start), Some(end)) => Some(current.min(start).min(end)),
+            (None, Some(start), Some(end)) => Some(start.min(end)),
+            (current, _, _) => current,
+        };
+        entry.maximum_percentage = match (
+            entry.maximum_percentage,
+            session.start_percentage,
+            session.end_percentage,
+        ) {
+            (Some(current), Some(start), Some(end)) => Some(current.max(start).max(end)),
+            (None, Some(start), Some(end)) => Some(start.max(end)),
+            (current, _, _) => current,
+        };
+        if let (Some(start), Some(end)) = (session.start_energy_wh, session.end_energy_wh) {
+            let change = end - start;
+            if change < 0.0 {
+                entry.observed_energy_used_wh =
+                    Some(entry.observed_energy_used_wh.unwrap_or(0.0) - change);
+            } else {
+                entry.observed_energy_charged_wh =
+                    Some(entry.observed_energy_charged_wh.unwrap_or(0.0) + change);
+            }
+        }
+    }
+    buckets.into_values().collect()
 }
 
 #[derive(Default)]
@@ -847,6 +1178,8 @@ fn app_builder() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default().invoke_handler(tauri::generate_handler![
         get_battery_dashboard,
         get_recent_battery_history,
+        get_battery_session_history,
+        rebuild_battery_session_history,
         get_recorder_status,
         set_recorder_enabled
     ])

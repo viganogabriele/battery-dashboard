@@ -347,3 +347,34 @@ meter {
     grid-template-columns: 1fr;
   }
 }
+
+.session-actions {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 1rem;
+  color: var(--color-text-secondary);
+  font-size: 0.85rem;
+}
+
+.session-actions p {
+  margin: 0;
+}
+
+.session-actions button {
+  flex: none;
+  border: 1px solid var(--color-border-subtle);
+  border-radius: 0.55rem;
+  padding: 0.5rem 0.7rem;
+  color: var(--color-accent-ink);
+  background: var(--color-accent);
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.session-actions button:disabled {
+  cursor: wait;
+  opacity: 0.6;
+}

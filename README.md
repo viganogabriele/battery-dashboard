@@ -14,7 +14,7 @@ interfaces are supported, but they are not yet official targets.
 
 ## Current status
 
-Phases 1–6 are complete. The repository includes the Tauri 2 desktop shell,
+Phases 1–7 are complete. The repository includes the Tauri 2 desktop shell,
 the Svelte/Vite/Tailwind scaffold, a small platform-neutral Rust domain crate, a
 responsive dashboard, metric cards, SVG charts, typed fixture scenarios, and
 navigation placeholders for later screens. The scenario selector exercises

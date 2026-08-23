@@ -11,6 +11,8 @@
     type RecentHistoryRecorderState,
   } from './lib/components/RecentHistoryChart.svelte';
   import RecorderSettings from './lib/components/RecorderSettings.svelte';
+  import SessionsView from './lib/components/SessionsView.svelte';
+  import CalendarHistoryView from './lib/components/CalendarHistoryView.svelte';
   import { isMetricAvailable, type Metric } from './lib/domain/battery';
   import {
     dashboardScenarioCatalog,
@@ -33,6 +35,11 @@
     type RecentBatteryHistoryData,
     type RecentHistoryRangeHours,
   } from './lib/services/recent-history-client';
+  import {
+    createDesktopSessionHistoryClient,
+    type CalendarSummaryPeriod,
+    type BatterySessionHistoryData,
+  } from './lib/services/session-history-client';
 
   const defaultScenario =
     findDashboardScenario(dashboardScenarioCatalog.defaultScenarioId) ??
@@ -54,6 +61,16 @@
   let historyRange = $state<RecentHistoryRangeHours>(24);
   const recorderClient = createDesktopRecorderClient();
   const recentHistoryClient = createDesktopRecentBatteryHistoryClient();
+  const sessionHistoryClient = createDesktopSessionHistoryClient();
+  let sessionHistory = $state<BatterySessionHistoryData | null>(null);
+  let isRefreshingSessions = $state(false);
+  let isRebuildingSessions = $state(false);
+  let sessionStateFilter = $state<
+    'all' | 'charging' | 'discharging' | 'full' | 'unknown'
+  >('all');
+  let calendarPeriod = $state<CalendarSummaryPeriod>('daily');
+  let sessionStartDate = $state('');
+  let sessionEndDate = $state('');
 
   let scenario = $derived(findDashboardScenario(selectedScenarioId) ?? defaultScenario);
   let batteries = $derived(liveDashboard?.batteries ?? scenario.batteries);
@@ -137,6 +154,41 @@
   function selectBattery(id: string) {
     selectedBatteryId = id;
     if (isLiveData) void refreshRecentHistory(id);
+    if (isLiveData) void refreshSessionHistory(id);
+  }
+
+  function timezone(): string {
+    return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
+  }
+  async function refreshSessionHistory(batteryId = selectedBatteryId) {
+    if (isRefreshingSessions) return;
+    isRefreshingSessions = true;
+    try {
+      sessionHistory = await sessionHistoryClient.getHistory({
+        batteryId: batteryId === 'all-batteries' ? undefined : batteryId,
+        states: sessionStateFilter === 'all' ? undefined : [sessionStateFilter],
+        startDate: sessionStartDate || undefined,
+        endDate: sessionEndDate || undefined,
+        timezone: timezone(),
+      });
+    } catch {
+      sessionHistory = null;
+    } finally {
+      isRefreshingSessions = false;
+    }
+  }
+  function refreshSessionFilters() {
+    if (isLiveData) void refreshSessionHistory();
+  }
+  async function rebuildSessions() {
+    if (isRebuildingSessions) return;
+    isRebuildingSessions = true;
+    try {
+      await sessionHistoryClient.rebuild();
+      await refreshSessionHistory();
+    } finally {
+      isRebuildingSessions = false;
+    }
   }
 
   function selectHistoryRange(range: RecentHistoryRangeHours) {
@@ -168,10 +220,12 @@
         ? selectedBatteryId
         : suggestedBatteryId;
       await refreshRecentHistory(selectedBatteryId);
+      await refreshSessionHistory(selectedBatteryId);
     } catch {
       // The browser preview deliberately keeps its fixtures when Tauri is absent.
       liveDashboard = null;
       recentHistory = null;
+      sessionHistory = null;
     } finally {
       isRefreshingLiveData = false;
     }
@@ -226,6 +280,12 @@
     const hours = Math.floor(metric.value / 60);
     const minutes = Math.round(metric.value % 60);
     return hours > 0 ? `${hours} h ${minutes} min` : `${minutes} min`;
+  }
+
+  function sessionViewState(
+    state: 'charging' | 'discharging' | 'full' | 'idle' | 'unknown',
+  ): 'charging' | 'discharging' | 'full' | 'unknown' {
+    return state === 'idle' ? 'unknown' : state;
   }
 
   function formatTimestamp(timestamp: string | null): string {
@@ -432,6 +492,93 @@
           hint="The real application will show this state instead of inventing measurements."
         />
       {/if}
+    {:else if activeSection === 'sessions'}
+      <div class="session-actions">
+        <button type="button" onclick={rebuildSessions} disabled={isRebuildingSessions}>
+          {isRebuildingSessions ? 'Rebuilding sessions…' : 'Rebuild local sessions'}
+        </button>
+        <p>Rebuild uses immutable local samples and does not collect new data.</p>
+      </div>
+      <SessionsView
+        sessions={(sessionHistory?.sessions ?? []).map((session) => ({
+          id: session.id,
+          batteryId: session.batteryId ?? 'unknown',
+          batteryLabel: session.batteryId,
+          state: sessionViewState(session.state),
+          startedAt: session.startedAt,
+          endedAt: session.endedAt,
+          completeness: session.completeness === 'complete' ? 'complete' : 'incomplete',
+          gapReason: session.boundaryReason.replaceAll('-', ' '),
+          durationMinutes:
+            session.durationSeconds === null ? null : session.durationSeconds / 60,
+          percentageChange:
+            session.startPercentage === null || session.endPercentage === null
+              ? null
+              : session.endPercentage - session.startPercentage,
+          energyChangeWh: session.transferredEnergyWh,
+          averagePowerWatts: session.averagePowerWatts,
+          peakPowerWatts: session.peakPowerWatts,
+        }))}
+        batteries={batteryOptions.filter((battery) => battery.id !== 'all-batteries')}
+        {selectedBatteryId}
+        selectedState={sessionStateFilter}
+        startDate={sessionStartDate}
+        endDate={sessionEndDate}
+        loading={isRefreshingSessions}
+        unsupportedReason={sessionHistory?.availability === 'unavailable'
+          ? sessionHistory.unavailableReason
+          : null}
+        onBatteryChange={selectBattery}
+        onStateChange={(state) => {
+          sessionStateFilter = state;
+          refreshSessionFilters();
+        }}
+        onStartDateChange={(date) => {
+          sessionStartDate = date;
+          refreshSessionFilters();
+        }}
+        onEndDateChange={(date) => {
+          sessionEndDate = date;
+          refreshSessionFilters();
+        }}
+      />
+    {:else if activeSection === 'history'}
+      <CalendarHistoryView
+        periods={(sessionHistory?.[calendarPeriod] ?? []).map((item) => ({
+          id: `${item.bucket}-${item.batteryId ?? 'all'}`,
+          label: item.bucket,
+          coveragePercent:
+            item.coverageRatio === null ? null : item.coverageRatio * 100,
+          minimumPercentage: item.minimumPercentage,
+          maximumPercentage: item.maximumPercentage,
+          observedEnergyWh: item.observedEnergyUsedWh ?? item.observedEnergyChargedWh,
+          averagePowerWatts: null,
+        }))}
+        batteries={batteryOptions.filter((battery) => battery.id !== 'all-batteries')}
+        selectedAggregation={calendarPeriod}
+        {selectedBatteryId}
+        selectedState={sessionStateFilter}
+        startDate={sessionStartDate}
+        endDate={sessionEndDate}
+        loading={isRefreshingSessions}
+        unsupportedReason={sessionHistory?.availability === 'unavailable'
+          ? sessionHistory.unavailableReason
+          : null}
+        onAggregationChange={(period) => (calendarPeriod = period)}
+        onBatteryChange={selectBattery}
+        onStateChange={(state) => {
+          sessionStateFilter = state;
+          refreshSessionFilters();
+        }}
+        onStartDateChange={(date) => {
+          sessionStartDate = date;
+          refreshSessionFilters();
+        }}
+        onEndDateChange={(date) => {
+          sessionEndDate = date;
+          refreshSessionFilters();
+        }}
+      />
     {:else if activeSection === 'settings'}
       <section class="settings-panel">
         <RecorderSettings client={recorderClient} />

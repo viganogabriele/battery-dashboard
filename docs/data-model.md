@@ -56,6 +56,15 @@ point. It is visibly distinct from persisted data and is not a recorder write.
 If the recorder is disabled, sparse, stale, or unavailable, the UI says so and
 does not infer charge, discharge, energy change, or a missing timeline.
 
+## Derived sessions
+
+Schema version 2 adds a rebuildable `battery_sessions` cache. It is derived
+transactionally from immutable samples, separately for every physical battery.
+State changes, boots, and recording gaps end a session; end-of-data is marked
+incomplete rather than guessed as battery removal. Rebuild never mutates raw
+samples. Calendar views use the selected IANA timezone and keep incomplete or
+unobserved values unavailable.
+
 ## SQLite operation
 
 Each connection enables WAL mode, foreign keys, and a five-second busy timeout.

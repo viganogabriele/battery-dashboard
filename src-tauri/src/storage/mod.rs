@@ -24,7 +24,10 @@ const BUSY_TIMEOUT_MILLISECONDS: u32 = 5_000;
 /// line that a chart may safely interpolate.
 const MAX_CONTIGUOUS_SAMPLE_SECONDS: f64 = 180.0;
 
-const MIGRATIONS: &[&str] = &[include_str!("../../migrations/0001_initial.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../../migrations/0001_initial.sql"),
+    include_str!("../../migrations/0002_battery_sessions.sql"),
+];
 
 /// An error raised while locating, migrating, validating, or writing the local database.
 #[derive(Debug)]
@@ -35,6 +38,8 @@ pub enum StorageError {
     InvalidSample(String),
     /// A caller requested a history interval that cannot be interpreted safely.
     InvalidHistoryQuery(String),
+    /// A caller supplied an invalid derived-session or aggregation query.
+    InvalidSessionQuery(String),
     /// The database is newer than this version of the application understands.
     UnsupportedSchemaVersion(i64),
     /// An operating-system filesystem operation failed.
@@ -51,6 +56,7 @@ impl fmt::Display for StorageError {
             ),
             Self::InvalidSample(message) => write!(formatter, "invalid battery sample: {message}"),
             Self::InvalidHistoryQuery(message) => write!(formatter, "invalid history query: {message}"),
+            Self::InvalidSessionQuery(message) => write!(formatter, "invalid session query: {message}"),
             Self::UnsupportedSchemaVersion(version) => {
                 write!(formatter, "database schema version {version} is newer than supported")
             }
@@ -68,6 +74,7 @@ impl Error for StorageError {
             Self::DataDirectoryUnavailable
             | Self::InvalidSample(_)
             | Self::InvalidHistoryQuery(_)
+            | Self::InvalidSessionQuery(_)
             | Self::UnsupportedSchemaVersion(_) => None,
         }
     }
@@ -372,6 +379,115 @@ pub struct HistoryResponse {
     pub summary: HistorySummary,
 }
 
+/// A normalized activity represented by a derived battery session.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[allow(missing_docs)]
+pub enum BatterySessionKind {
+    Charging,
+    Discharging,
+    Full,
+    /// Includes provider `idle` and `unknown`: neither is safely charge or discharge.
+    Unknown,
+}
+
+impl BatterySessionKind {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::Charging => "charging",
+            Self::Discharging => "discharging",
+            Self::Full => "full",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
+/// Why a session ended without a continuously observed terminal transition.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionInterruptReason {
+    /// The following observation reported another state. The exact transition instant is unknown.
+    StateChanged,
+    /// A new Linux boot makes boot-relative timing discontinuous.
+    BootChanged,
+    /// The recorder was absent for longer than its continuity limit.
+    SampleGap,
+    /// No subsequent sample exists. This can include battery removal, shutdown, or a stopped recorder.
+    DataEnded,
+}
+
+impl SessionInterruptReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::StateChanged => "state_changed",
+            Self::BootChanged => "boot_changed",
+            Self::SampleGap => "sample_gap",
+            Self::DataEnded => "data_ended",
+        }
+    }
+}
+
+/// A durable, derived contiguous run of observations for one physical battery.
+///
+/// `observed_duration_seconds` is the sum of only adjacent observed intervals.
+/// It is never extended to the next state, a gap, or the current time.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(missing_docs)]
+pub struct BatterySession {
+    pub battery_id: String,
+    pub kind: BatterySessionKind,
+    pub started_at: String,
+    pub ended_at: String,
+    pub sample_count: u64,
+    pub observed_duration_seconds: Option<f64>,
+    /// Endpoint values are present only when every sample in this session had
+    /// that metric; they never bridge a missing provider value.
+    pub start_percentage: Option<f64>,
+    pub end_percentage: Option<f64>,
+    pub start_energy_wh: Option<f64>,
+    pub end_energy_wh: Option<f64>,
+    /// Time-weighted observed power, only when every sample supplied power.
+    pub average_power_watts: Option<f64>,
+    /// True only when a following observed sample establishes a state boundary.
+    pub complete: bool,
+    pub interrupt_reason: SessionInterruptReason,
+}
+
+/// A bounded session read. Supplying no battery selects sessions per battery,
+/// never a synthetic combined battery.
+#[derive(Clone, Debug, PartialEq)]
+#[allow(missing_docs)]
+pub struct SessionQuery {
+    pub start: OffsetDateTime,
+    pub end: OffsetDateTime,
+    pub battery_id: Option<String>,
+}
+
+/// Calendar bucket width for observed session-duration reporting.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+#[allow(missing_docs)]
+pub enum SessionAggregationPeriod {
+    Daily,
+    Weekly,
+    Monthly,
+}
+
+/// A per-battery calendar bucket. Metrics are intentionally absent: sessions
+/// cannot establish energy or power across unobserved boundaries.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+#[allow(missing_docs)]
+pub struct SessionAggregation {
+    /// ISO-8601 local calendar key (`YYYY-MM-DD`, `YYYY-Www`, or `YYYY-MM`).
+    pub bucket: String,
+    pub battery_id: String,
+    pub session_count: u64,
+    pub complete_session_count: u64,
+    pub observed_duration_seconds: Option<f64>,
+}
+
 /// A migrated connection to Battery Dashboard's local `SQLite` history database.
 pub struct Storage {
     connection: Connection,
@@ -594,6 +710,135 @@ impl Storage {
         history_response(query, &raw)
     }
 
+    /// Rebuilds all derived sessions from immutable `battery_samples`.
+    ///
+    /// This is deliberately a whole-table, transactional rebuild rather than a
+    /// best-effort incremental cache: running it repeatedly produces the same
+    /// rows from the same samples and cannot alter the source observations.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when source rows cannot be read or the replacement
+    /// derived rows cannot be committed.
+    pub fn rebuild_sessions(&mut self) -> Result<u64, StorageError> {
+        let samples = load_session_samples(&self.connection)?;
+        let sessions = derive_sessions(&samples);
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute("DELETE FROM battery_sessions", [])?;
+        for session in &sessions {
+            transaction.execute(
+                "INSERT INTO battery_sessions (
+                    battery_id, kind, started_at_utc, ended_at_utc, sample_count,
+                    observed_duration_seconds, start_percentage, end_percentage,
+                    start_energy_wh, end_energy_wh, average_power_watts, complete, interrupt_reason
+                ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+                params![
+                    session.battery_id,
+                    session.kind.as_str(),
+                    session.started_at,
+                    session.ended_at,
+                    session.sample_count,
+                    session.observed_duration_seconds,
+                    session.start_percentage,
+                    session.end_percentage,
+                    session.start_energy_wh,
+                    session.end_energy_wh,
+                    session.average_power_watts,
+                    session.complete,
+                    session.interrupt_reason.as_str(),
+                ],
+            )?;
+        }
+        transaction.commit()?;
+        u64::try_from(sessions.len())
+            .map_err(|_| StorageError::InvalidSessionQuery("session count exceeds u64".to_owned()))
+    }
+
+    /// Reads derived sessions whose observed range overlaps the inclusive UTC query.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid bounds or unreadable derived rows.
+    pub fn sessions(&self, query: &SessionQuery) -> Result<Vec<BatterySession>, StorageError> {
+        validate_session_query(query)?;
+        let start = format_utc(query.start)?;
+        let end = format_utc(query.end)?;
+        let mut statement = self.connection.prepare(
+            "SELECT battery_id, kind, started_at_utc, ended_at_utc, sample_count,
+                    observed_duration_seconds, start_percentage, end_percentage,
+                    start_energy_wh, end_energy_wh, average_power_watts, complete, interrupt_reason
+             FROM battery_sessions
+             WHERE ended_at_utc >= ?1 AND started_at_utc <= ?2
+               AND (?3 IS NULL OR battery_id = ?3)
+             ORDER BY started_at_utc ASC, id ASC",
+        )?;
+        statement
+            .query_map(
+                params![start, end, query.battery_id.as_deref()],
+                session_from_row,
+            )?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(Into::into)
+    }
+
+    /// Groups sessions by the local calendar date of their first observation.
+    ///
+    /// `offset` is a fixed offset, so callers requiring IANA timezone/DST rules
+    /// must perform grouping in a timezone-aware frontend or add a dedicated
+    /// timezone dependency. A bucket whose session crosses a calendar boundary
+    /// reports no duration rather than allocating unobserved partial time.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the session query is invalid or derived data is malformed.
+    pub fn aggregate_sessions(
+        &self,
+        query: &SessionQuery,
+        period: SessionAggregationPeriod,
+        offset: time::UtcOffset,
+    ) -> Result<Vec<SessionAggregation>, StorageError> {
+        use std::collections::BTreeMap;
+
+        let sessions = self.sessions(query)?;
+        let mut buckets = BTreeMap::<(String, String), (u64, u64, Option<f64>)>::new();
+        for session in sessions {
+            let start = OffsetDateTime::parse(&session.started_at, &Rfc3339)
+                .map_err(|error| StorageError::InvalidSessionQuery(error.to_string()))?
+                .to_offset(offset);
+            let end = OffsetDateTime::parse(&session.ended_at, &Rfc3339)
+                .map_err(|error| StorageError::InvalidSessionQuery(error.to_string()))?
+                .to_offset(offset);
+            let bucket = session_bucket(start, period);
+            let crosses_boundary = bucket != session_bucket(end, period);
+            let entry = buckets
+                .entry((bucket, session.battery_id))
+                .or_insert((0, 0, Some(0.0)));
+            entry.0 += 1;
+            entry.1 += u64::from(session.complete);
+            entry.2 = match (entry.2, session.observed_duration_seconds, crosses_boundary) {
+                (Some(total), Some(duration), false) => Some(total + duration),
+                _ => None,
+            };
+        }
+        Ok(buckets
+            .into_iter()
+            .map(
+                |(
+                    (bucket, battery_id),
+                    (session_count, complete_session_count, observed_duration_seconds),
+                )| SessionAggregation {
+                    bucket,
+                    battery_id,
+                    session_count,
+                    complete_session_count,
+                    observed_duration_seconds,
+                },
+            )
+            .collect())
+    }
+
     #[cfg(test)]
     fn connection(&self) -> &Connection {
         &self.connection
@@ -778,6 +1023,221 @@ fn sample_state_from_database(value: &str) -> rusqlite::Result<SampleState> {
             rusqlite::types::Type::Text,
             format!("unknown sample state {value:?}").into(),
         )),
+    }
+}
+
+#[derive(Clone, Debug)]
+struct RawSessionSample {
+    battery_id: String,
+    recorded_at: OffsetDateTime,
+    state: SampleState,
+    boot_id: String,
+    percentage: Option<f64>,
+    energy_now_wh: Option<f64>,
+    power_watts: Option<f64>,
+}
+
+fn load_session_samples(connection: &Connection) -> Result<Vec<RawSessionSample>, StorageError> {
+    let mut statement = connection.prepare(
+        "SELECT battery_id, recorded_at_utc, state, boot_id, percentage, energy_now_wh, power_watts
+         FROM battery_samples ORDER BY battery_id ASC, recorded_at_utc ASC, id ASC",
+    )?;
+    statement
+        .query_map([], |row| {
+            let timestamp: String = row.get(1)?;
+            let recorded_at = OffsetDateTime::parse(&timestamp, &Rfc3339).map_err(|error| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    1,
+                    rusqlite::types::Type::Text,
+                    Box::new(error),
+                )
+            })?;
+            Ok(RawSessionSample {
+                battery_id: row.get(0)?,
+                recorded_at: recorded_at.to_offset(time::UtcOffset::UTC),
+                state: sample_state_from_database(&row.get::<_, String>(2)?)?,
+                boot_id: row.get(3)?,
+                percentage: row.get(4)?,
+                energy_now_wh: row.get(5)?,
+                power_watts: row.get(6)?,
+            })
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(Into::into)
+}
+
+fn session_kind(state: SampleState) -> BatterySessionKind {
+    match state {
+        SampleState::Charging => BatterySessionKind::Charging,
+        SampleState::Discharging => BatterySessionKind::Discharging,
+        SampleState::Full => BatterySessionKind::Full,
+        SampleState::Idle | SampleState::Unknown => BatterySessionKind::Unknown,
+    }
+}
+
+fn derive_sessions(samples: &[RawSessionSample]) -> Vec<BatterySession> {
+    let mut output = Vec::new();
+    let mut start = 0;
+    while start < samples.len() {
+        let battery_id = &samples[start].battery_id;
+        let mut end = start + 1;
+        while end < samples.len() && samples[end].battery_id == *battery_id {
+            end += 1;
+        }
+        let battery_samples = &samples[start..end];
+        let mut segment_start = 0;
+        for index in 1..battery_samples.len() {
+            let previous = &battery_samples[index - 1];
+            let current = &battery_samples[index];
+            let reason = if previous.boot_id != current.boot_id {
+                Some(SessionInterruptReason::BootChanged)
+            } else if (current.recorded_at - previous.recorded_at).as_seconds_f64()
+                > MAX_CONTIGUOUS_SAMPLE_SECONDS
+            {
+                Some(SessionInterruptReason::SampleGap)
+            } else if previous.state != current.state {
+                Some(SessionInterruptReason::StateChanged)
+            } else {
+                None
+            };
+            if let Some(reason) = reason {
+                output.push(build_session(
+                    &battery_samples[segment_start..index],
+                    reason,
+                ));
+                segment_start = index;
+            }
+        }
+        output.push(build_session(
+            &battery_samples[segment_start..],
+            SessionInterruptReason::DataEnded,
+        ));
+        start = end;
+    }
+    output
+}
+
+fn build_session(
+    samples: &[RawSessionSample],
+    interrupt_reason: SessionInterruptReason,
+) -> BatterySession {
+    debug_assert!(!samples.is_empty());
+    let first = &samples[0];
+    let last = samples.last().expect("nonempty session");
+    let duration = (samples.len() > 1).then(|| {
+        samples
+            .windows(2)
+            .map(|pair| (pair[1].recorded_at - pair[0].recorded_at).as_seconds_f64())
+            .sum()
+    });
+    let complete_metric = |values: Vec<Option<f64>>| values.into_iter().collect::<Option<Vec<_>>>();
+    let percentages = complete_metric(samples.iter().map(|sample| sample.percentage).collect());
+    let energy = complete_metric(samples.iter().map(|sample| sample.energy_now_wh).collect());
+    let powers = complete_metric(samples.iter().map(|sample| sample.power_watts).collect());
+    let average_power_watts = match (duration, powers) {
+        (Some(seconds), Some(powers)) if seconds > 0.0 => Some(
+            samples
+                .windows(2)
+                .zip(powers.windows(2))
+                .map(|(pair, power)| {
+                    power[0].midpoint(power[1])
+                        * (pair[1].recorded_at - pair[0].recorded_at).as_seconds_f64()
+                })
+                .sum::<f64>()
+                / seconds,
+        ),
+        _ => None,
+    };
+    BatterySession {
+        battery_id: first.battery_id.clone(),
+        kind: session_kind(first.state),
+        started_at: format_utc(first.recorded_at).expect("database timestamp was parsed"),
+        ended_at: format_utc(last.recorded_at).expect("database timestamp was parsed"),
+        sample_count: u64::try_from(samples.len()).expect("slice length fits u64"),
+        observed_duration_seconds: duration,
+        start_percentage: percentages.as_ref().map(|values| values[0]),
+        end_percentage: percentages
+            .as_ref()
+            .and_then(|values| values.last().copied()),
+        start_energy_wh: energy.as_ref().map(|values| values[0]),
+        end_energy_wh: energy.as_ref().and_then(|values| values.last().copied()),
+        average_power_watts,
+        complete: interrupt_reason == SessionInterruptReason::StateChanged,
+        interrupt_reason,
+    }
+}
+
+fn session_from_row(row: &Row<'_>) -> rusqlite::Result<BatterySession> {
+    Ok(BatterySession {
+        battery_id: row.get(0)?,
+        kind: match row.get::<_, String>(1)?.as_str() {
+            "charging" => BatterySessionKind::Charging,
+            "discharging" => BatterySessionKind::Discharging,
+            "full" => BatterySessionKind::Full,
+            "unknown" => BatterySessionKind::Unknown,
+            _value => {
+                return Err(rusqlite::Error::InvalidColumnType(
+                    1,
+                    "kind".to_owned(),
+                    rusqlite::types::Type::Text,
+                ));
+            }
+        },
+        started_at: row.get(2)?,
+        ended_at: row.get(3)?,
+        sample_count: row.get(4)?,
+        observed_duration_seconds: row.get(5)?,
+        start_percentage: row.get(6)?,
+        end_percentage: row.get(7)?,
+        start_energy_wh: row.get(8)?,
+        end_energy_wh: row.get(9)?,
+        average_power_watts: row.get(10)?,
+        complete: row.get(11)?,
+        interrupt_reason: match row.get::<_, String>(12)?.as_str() {
+            "state_changed" => SessionInterruptReason::StateChanged,
+            "boot_changed" => SessionInterruptReason::BootChanged,
+            "sample_gap" => SessionInterruptReason::SampleGap,
+            "data_ended" => SessionInterruptReason::DataEnded,
+            _ => {
+                return Err(rusqlite::Error::InvalidColumnType(
+                    12,
+                    "interrupt_reason".to_owned(),
+                    rusqlite::types::Type::Text,
+                ));
+            }
+        },
+    })
+}
+
+fn validate_session_query(query: &SessionQuery) -> Result<(), StorageError> {
+    if query.start > query.end {
+        return Err(StorageError::InvalidSessionQuery(
+            "start must not be after end".to_owned(),
+        ));
+    }
+    if query
+        .battery_id
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return Err(StorageError::InvalidSessionQuery(
+            "battery_id must not be empty when supplied".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn session_bucket(timestamp: OffsetDateTime, period: SessionAggregationPeriod) -> String {
+    let date = timestamp.date();
+    match period {
+        SessionAggregationPeriod::Daily => date.to_string(),
+        SessionAggregationPeriod::Monthly => {
+            format!("{:04}-{:02}", date.year(), u8::from(date.month()))
+        }
+        SessionAggregationPeriod::Weekly => {
+            let (year, week, _) = date.to_iso_week_date();
+            format!("{year:04}-W{week:02}")
+        }
     }
 }
 
@@ -1134,9 +1594,10 @@ mod tests {
     };
 
     use super::{
-        HistoryFreshness, HistoryGapReason, HistoryQuery, HistoryTimelineItem, InsertOutcome,
-        MetricSource, NewBatterySample, SampleMetric, SampleMetrics, SampleState, Storage,
-        StorageError, database_path_from_data_home,
+        BatterySessionKind, HistoryFreshness, HistoryGapReason, HistoryQuery, HistoryTimelineItem,
+        InsertOutcome, MetricSource, NewBatterySample, SampleMetric, SampleMetrics, SampleState,
+        SessionAggregationPeriod, SessionInterruptReason, SessionQuery, Storage, StorageError,
+        database_path_from_data_home, session_bucket,
     };
     use time::{OffsetDateTime, macros::datetime};
 
@@ -1213,7 +1674,7 @@ mod tests {
         let path = database_path_from_data_home(&root);
         let storage = Storage::open_at(&path).expect("empty database migrates");
 
-        assert_eq!(storage.schema_version().expect("version is readable"), 1);
+        assert_eq!(storage.schema_version().expect("version is readable"), 2);
         assert_eq!(storage.sample_count().expect("count is readable"), 0);
         assert_eq!(
             storage
@@ -1238,7 +1699,7 @@ mod tests {
         let first = Storage::open_at(&path).expect("first open migrates");
         drop(first);
         let second = Storage::open_at(&path).expect("second open leaves schema intact");
-        assert_eq!(second.schema_version().expect("version is readable"), 1);
+        assert_eq!(second.schema_version().expect("version is readable"), 2);
         drop(second);
         fs::remove_dir_all(root).expect("test directory is removable");
     }
@@ -1510,5 +1971,113 @@ mod tests {
         assert_eq!(result.summary.observed_energy_wh, None);
         drop(storage);
         fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn session_rebuild_is_idempotent_and_respects_boundaries_per_battery() {
+        let root = temporary_path("sessions");
+        let path = database_path_from_data_home(&root);
+        let mut storage = Storage::open_at(&path).expect("database opens");
+        let mut rows = vec![sample_at(0, Some(80.0)), sample_at(1, Some(79.0))];
+        rows[1].metrics.energy_now_wh = SampleMetric::unavailable();
+        let mut charging = sample_at(2, Some(79.5));
+        charging.state = SampleState::Charging;
+        rows.push(charging);
+        let mut gap = sample_at(10, Some(82.0));
+        gap.state = SampleState::Charging;
+        rows.push(gap);
+        let mut reboot = sample_at(11, Some(81.0));
+        reboot.boot_id = "other-boot".to_owned();
+        reboot.state = SampleState::Full;
+        rows.push(reboot);
+        let mut other_battery = sample_at(1, Some(50.0));
+        other_battery.battery_id = "BAT1".to_owned();
+        other_battery.state = SampleState::Full;
+        rows.push(other_battery);
+        for row in &rows {
+            storage.insert_sample(row).expect("sample inserts");
+        }
+
+        assert_eq!(storage.rebuild_sessions().expect("first rebuild"), 5);
+        let query = SessionQuery {
+            start: datetime!(2026-08-23 00:00 UTC),
+            end: datetime!(2026-08-24 00:00 UTC),
+            battery_id: None,
+        };
+        let first = storage.sessions(&query).expect("sessions read");
+        assert_eq!(storage.rebuild_sessions().expect("second rebuild"), 5);
+        assert_eq!(storage.sessions(&query).expect("sessions reread"), first);
+        let facts = first
+            .iter()
+            .map(|session| {
+                (
+                    session.battery_id.as_str(),
+                    session.kind,
+                    session.interrupt_reason,
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            facts,
+            vec![
+                (
+                    "BAT0",
+                    BatterySessionKind::Discharging,
+                    SessionInterruptReason::StateChanged
+                ),
+                (
+                    "BAT1",
+                    BatterySessionKind::Full,
+                    SessionInterruptReason::DataEnded
+                ),
+                (
+                    "BAT0",
+                    BatterySessionKind::Charging,
+                    SessionInterruptReason::SampleGap
+                ),
+                (
+                    "BAT0",
+                    BatterySessionKind::Charging,
+                    SessionInterruptReason::BootChanged
+                ),
+                (
+                    "BAT0",
+                    BatterySessionKind::Full,
+                    SessionInterruptReason::DataEnded
+                ),
+            ]
+        );
+        assert_eq!(first[0].observed_duration_seconds, Some(60.0));
+        assert_eq!(first[0].start_energy_wh, None);
+        assert_eq!(first[0].end_energy_wh, None);
+        assert!(first[0].complete);
+        assert!(!first[1].complete);
+        assert_eq!(first[1].observed_duration_seconds, None);
+        for period in [
+            SessionAggregationPeriod::Daily,
+            SessionAggregationPeriod::Weekly,
+            SessionAggregationPeriod::Monthly,
+        ] {
+            let aggregates = storage
+                .aggregate_sessions(&query, period, time::UtcOffset::UTC)
+                .expect("aggregation reads");
+            assert_eq!(aggregates.len(), 2, "never combines BAT0 and BAT1");
+        }
+        drop(storage);
+        fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn aggregation_buckets_honor_the_explicit_fixed_offset() {
+        let utc = datetime!(2026-08-01 00:30 UTC);
+        let west = time::UtcOffset::from_hms(-1, 0, 0).expect("valid offset");
+        let cases = [
+            (SessionAggregationPeriod::Daily, "2026-07-31"),
+            (SessionAggregationPeriod::Weekly, "2026-W31"),
+            (SessionAggregationPeriod::Monthly, "2026-07"),
+        ];
+        for (period, expected) in cases {
+            assert_eq!(session_bucket(utc.to_offset(west), period), expected);
+        }
     }
 }

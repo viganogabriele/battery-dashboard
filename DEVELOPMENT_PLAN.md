@@ -775,7 +775,7 @@ Exit tests:
 
 This completes the usable MVP.
 
-### Phase 7 — Sessions and calendar history
+### Phase 7 — Sessions and calendar history — Complete
 
 Deliverables:
 

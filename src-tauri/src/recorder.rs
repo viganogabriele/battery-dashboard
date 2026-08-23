@@ -132,6 +132,9 @@ pub async fn record_once() -> Result<RecordSummary, RecorderError> {
             InsertOutcome::Duplicate => summary.duplicates += 1,
         }
     }
+    if summary.inserted > 0 {
+        storage.rebuild_sessions()?;
+    }
 
     Ok(summary)
 }

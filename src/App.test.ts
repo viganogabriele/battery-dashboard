@@ -35,15 +35,18 @@ describe('App', () => {
     expect(screen.queryByLabelText('Battery metrics')).toBeNull();
   });
 
-  it('renders active navigation as a planned phase rather than false data', async () => {
+  it('renders calendar history with an explicit empty recorded state', async () => {
     render(App);
 
     await fireEvent.click(screen.getByRole('button', { name: /^History:/ }));
 
     expect(
       screen.getByRole('heading', {
-        name: 'History arrives in a later phase',
+        name: 'Recorded battery history',
       }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText('No recorded calendar history matches these filters.'),
     ).toBeTruthy();
   });
 

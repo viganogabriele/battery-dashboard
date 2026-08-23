@@ -8,6 +8,8 @@ import ExecutionContextNotice from './ExecutionContextNotice.svelte';
 import MetricCard from './MetricCard.svelte';
 import RecorderSettings from './RecorderSettings.svelte';
 import RecentHistoryChart from './RecentHistoryChart.svelte';
+import CalendarHistoryView from './CalendarHistoryView.svelte';
+import SessionsView from './SessionsView.svelte';
 
 describe('battery dashboard presentation components', () => {
   it('marks an unavailable stale metric honestly', () => {
@@ -176,5 +178,63 @@ describe('battery dashboard presentation components', () => {
     render(RecentHistoryChart, { points: [], recorderState: 'disabled' });
 
     expect(screen.getByText(/Enable recording to collect local readings/)).toBeTruthy();
+  });
+
+  it('shows incomplete session reasons and reports filter changes', async () => {
+    const onStateChange = vi.fn();
+    render(SessionsView, {
+      sessions: [
+        {
+          id: 's-1',
+          batteryId: 'BAT0',
+          state: 'discharging',
+          startedAt: '2026-01-01T09:00:00Z',
+          endedAt: '2026-01-01T10:00:00Z',
+          completeness: 'incomplete',
+          gapReason: 'computer suspended',
+          durationMinutes: 60,
+        },
+      ],
+      onStateChange,
+    });
+
+    expect(screen.getByText('Incomplete')).toBeTruthy();
+    expect(screen.getByText('Interrupted: computer suspended.')).toBeTruthy();
+    await fireEvent.change(screen.getByLabelText('State'), {
+      target: { value: 'charging' },
+    });
+    expect(onStateChange).toHaveBeenCalledWith('charging');
+  });
+
+  it('keeps unavailable calendar values unavailable and changes aggregation', async () => {
+    const onAggregationChange = vi.fn();
+    render(CalendarHistoryView, {
+      periods: [
+        {
+          id: '2026-01-01',
+          label: '1 Jan 2026',
+          coveragePercent: null,
+          observedEnergyWh: null,
+        },
+      ],
+      onAggregationChange,
+    });
+
+    expect(screen.getByText('Unavailable')).toBeTruthy();
+    expect(screen.getAllByText('—')).toHaveLength(4);
+    await fireEvent.click(screen.getByRole('button', { name: 'weekly' }));
+    expect(onAggregationChange).toHaveBeenCalledWith('weekly');
+  });
+
+  it('states when session and calendar history are unavailable', () => {
+    render(SessionsView, {
+      unsupportedReason: 'This recorder does not provide sessions.',
+    });
+    render(CalendarHistoryView, {
+      unsupportedReason: 'This recorder does not provide calendar summaries.',
+    });
+
+    expect(screen.getByText(/Session history is unavailable/)).toBeTruthy();
+    expect(screen.getByText(/Calendar history is unavailable/)).toBeTruthy();
   });
 });
