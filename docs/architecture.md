@@ -28,8 +28,10 @@ retaining its `upower`, `sysfs`, or `derived` provenance. UPower's aggregate
 `DisplayDevice` and non-power-supply peripherals are excluded; physical sysfs
 batteries are discovered by `type=Battery`, not assumed to be named `BAT0`.
 
-The recorder will be a separate one-shot executable so history can continue to
-be collected while the window is closed. It is never a custom daemon.
+The recorder is a separate one-shot executable so history can continue to be
+collected while the window is closed. It is never a custom daemon. The desktop
+app and recorder share the same Rust provider and storage library, so field
+normalization cannot drift between live display and persisted samples.
 
 ## Portable boundaries
 
@@ -69,9 +71,9 @@ misleading single aggregate value.
 
 ## Persistence and lifecycle
 
-SQLite will use versioned migrations, foreign keys, WAL mode, a busy timeout,
-and short transactions. It will store raw samples, battery metadata, derived
-sessions, and summaries under the XDG data directory:
+SQLite now uses versioned `PRAGMA user_version` migrations, foreign keys, WAL
+mode, a five-second busy timeout, append-only samples, and short transactions.
+The current schema stores immutable raw samples under the XDG data directory:
 
 ```text
 ${XDG_DATA_HOME:-~/.local/share}/battery-dashboard/battery.sqlite3
@@ -82,13 +84,20 @@ available. Suspends, shutdowns, reboots, removed batteries, and large
 collection gaps create real boundaries; they are not reconstructed by
 interpolation.
 
-Background recording will be opt-in. Its eventual per-user paths are:
+Background recording is opt-in and disabled by default. When a user enables it,
+the app stages a recorder binary and unit files under user-owned XDG paths:
 
 ```text
-~/.local/libexec/battery-dashboard/recorder
-~/.config/systemd/user/battery-dashboard-recorder.service
-~/.config/systemd/user/battery-dashboard-recorder.timer
+${XDG_DATA_HOME:-~/.local/share}/battery-dashboard/libexec/battery-dashboard-recorder
+${XDG_CONFIG_HOME:-~/.config}/systemd/user/battery-dashboard-recorder.service
+${XDG_CONFIG_HOME:-~/.config}/systemd/user/battery-dashboard-recorder.timer
 ```
+
+The service starts exactly one recorder execution; the timer requests a run
+every 60 seconds and intentionally has `Persistent=false`, so downtime and
+suspend become real gaps rather than synthetic catch-up samples. The manager
+is controlled only with `systemctl --user`; no system unit or privilege
+escalation is involved.
 
 ## Security boundaries
 

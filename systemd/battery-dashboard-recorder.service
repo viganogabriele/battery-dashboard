@@ -1,0 +1,16 @@
+[Unit]
+Description=Battery Dashboard one-shot recorder
+Documentation=https://github.com/viganogabriele/battery-dashboard
+
+[Service]
+Type=oneshot
+ExecStart={{RECORDER_PATH}}
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+ProtectKernelTunables=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RestrictAddressFamilies=AF_UNIX

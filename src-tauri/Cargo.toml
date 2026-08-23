@@ -4,15 +4,21 @@ description = "Native desktop shell for Battery Dashboard."
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+default-run = "battery-dashboard-desktop"
 publish = false
+
+[[bin]]
+name = "battery-dashboard-recorder"
+path = "src/bin/recorder.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+rusqlite = { version = "0.37", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
-time = { version = "0.3", features = ["formatting"] }
+time = { version = "0.3", features = ["formatting", "parsing"] }
 zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [lints.rust]

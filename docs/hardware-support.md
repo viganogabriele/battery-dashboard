@@ -14,12 +14,13 @@ tested.
 
 ## Current implementation limit
 
-Phase 4 reads current physical laptop batteries from UPower and
+Phase 5 reads current physical laptop batteries from UPower and
 `/sys/class/power_supply`. It excludes UPower's aggregate display device and
 non-power-supply peripherals, and it discovers sysfs entries by `type=Battery`.
-The UI is therefore useful with BAT0, BAT1, or differently named packs, but it
-does not yet keep a history, infer unsupported fields, or establish universal
-hardware compatibility from one machine.
+The UI and recorder are therefore useful with BAT0, BAT1, or differently named
+packs. Recorder rows preserve missing values and field provenance; they do not
+infer unsupported fields or establish universal hardware compatibility from one
+machine.
 
 An unavailable field remains unavailable. In particular, charge values in Ah
 are not presented as energy values in Wh unless a later phase has a valid,
@@ -63,10 +64,10 @@ sampling are preserved rather than interpolated.
 
 ## Background recording
 
-The planned background recorder needs a systemd user session in version 1. On
-non-systemd systems the eventual live dashboard may still work, but it must
-state that persistent recording is unsupported. Alternative scheduler backends
-are a post-version-1 portability task.
+The background recorder needs a reachable systemd user session in version 1.
+On non-systemd systems the live dashboard still works, but Settings reports
+that persistent recording is unsupported. Alternative scheduler backends are a
+post-version-1 portability task.
 
 ## How to help validate support
 

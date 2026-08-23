@@ -4,12 +4,13 @@ Battery Dashboard is designed as a local-only application.
 
 ## What it will store
 
-When background recording is explicitly enabled, the application will store
-battery observations locally in SQLite. Planned fields include timestamps,
-battery state, percentage, energy, power, current, voltage, temperature,
-capacity, and hardware cycle count when exposed by the device. It may also
-store non-sensitive device metadata needed to recognise a local battery over
-time.
+When background recording is explicitly enabled, the application stores battery
+observations locally in SQLite. Fields include UTC timestamps, Linux boot ID,
+boot-relative time, battery state, percentage, energy, power, current, voltage,
+temperature, capacity, and hardware cycle count when exposed by the device.
+Each numeric field also stores its `upower`, `sysfs`, `derived`, or
+`unavailable` provenance. It may later store non-sensitive device metadata
+needed to recognise a local battery over time.
 
 The planned default database location is:
 
@@ -29,10 +30,12 @@ ${XDG_DATA_HOME:-~/.local/share}/battery-dashboard/battery.sqlite3
 
 ## Recording control and removal
 
-The planned recorder runs from a `systemd --user` timer and can be disabled at
-any time. Disabling it will stop future sampling but retain existing history.
-Uninstall will also preserve the local database by default; an explicit purge
-action will be required to delete history.
+The recorder runs from an opt-in `systemd --user` timer and can be disabled at
+any time. Enabling it explicitly copies the recorder to a user-owned XDG data
+location and writes two user unit files below XDG config; it never uses `sudo`,
+`pkexec`, or a system-wide unit. Disabling stops future sampling but retains
+existing history. Uninstall will also preserve the local database by default;
+an explicit purge action will be required to delete history.
 
 ## Exports
 
@@ -43,8 +46,8 @@ and share them deliberately.
 
 ## Current status
 
-During Phase 4, the Tauri command reads current UPower and sysfs values only
-when the desktop window requests them. It does not create a database, install a
-timer, export data, start a network service, or send data off the device.
-There is no background collection while the window is closed; that is an
-opt-in feature reserved for the later recorder phase.
+During Phase 5, the Tauri command still reads current UPower and sysfs values
+only locally. Background collection happens only after an explicit Settings
+action enables the user timer. The timer is disabled by default; it launches a
+one-shot recorder every 60 seconds and exits. The app has no cloud endpoint,
+telemetry, export, or network service.

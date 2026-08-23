@@ -13,6 +13,7 @@
   },
   "scripts": {
     "dev": "vite",
+    "dev:desktop": "cargo build --manifest-path src-tauri/Cargo.toml --bin battery-dashboard-recorder && vite",
     "build": "vite build",
     "preview": "vite preview",
     "tauri": "tauri",

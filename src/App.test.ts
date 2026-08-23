@@ -46,4 +46,14 @@ describe('App', () => {
       }),
     ).toBeTruthy();
   });
+
+  it('shows opt-in recorder settings without pretending browser preview supports them', async () => {
+    render(App);
+
+    await fireEvent.click(screen.getByRole('button', { name: /^Settings:/ }));
+
+    expect(screen.getByRole('heading', { name: 'Background recorder' })).toBeTruthy();
+    expect(screen.getByText('Not supported on this system')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Enable recording/ })).toBeNull();
+  });
 });

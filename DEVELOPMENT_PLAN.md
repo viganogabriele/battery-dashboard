@@ -722,7 +722,7 @@ Exit tests:
 - real Arch hardware smoke test;
 - Rustfmt, Clippy with warnings denied, and Rust tests.
 
-### Phase 5 — SQLite and periodic Rust recorder
+### Phase 5 — SQLite and periodic Rust recorder — Complete
 
 Deliverables:
 

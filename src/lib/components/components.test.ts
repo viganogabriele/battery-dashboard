@@ -6,6 +6,7 @@ import BatteryStateBadge from './BatteryStateBadge.svelte';
 import EmptyState from './EmptyState.svelte';
 import ExecutionContextNotice from './ExecutionContextNotice.svelte';
 import MetricCard from './MetricCard.svelte';
+import RecorderSettings from './RecorderSettings.svelte';
 
 describe('battery dashboard presentation components', () => {
   it('marks an unavailable stale metric honestly', () => {
@@ -73,5 +74,43 @@ describe('battery dashboard presentation components', () => {
 
     expect(screen.getByText('Desktop mode')).toBeTruthy();
     expect(screen.getByRole('heading', { name: 'Native desktop window' })).toBeTruthy();
+  });
+
+  it('states that recorder collection is opt-in and can enable it', async () => {
+    const client = {
+      getStatus: vi.fn().mockResolvedValue({
+        state: 'disabled' as const,
+        lastRecordedAt: null,
+        error: null,
+      }),
+      setEnabled: vi.fn().mockResolvedValue({
+        state: 'enabled' as const,
+        lastRecordedAt: null,
+        error: null,
+      }),
+    };
+    render(RecorderSettings, {
+      client,
+      initialStatus: { state: 'disabled', lastRecordedAt: null, error: null },
+    });
+
+    expect(screen.getByText(/Recording is opt-in and stays local/)).toBeTruthy();
+    await fireEvent.click(screen.getByRole('button', { name: 'Enable recording' }));
+
+    expect(client.setEnabled).toHaveBeenCalledWith(true);
+    expect(screen.getByText('Recording is active')).toBeTruthy();
+  });
+
+  it('does not offer recorder controls on an unsupported system', () => {
+    render(RecorderSettings, {
+      client: {
+        getStatus: vi.fn().mockResolvedValue({ state: 'unsupported' }),
+        setEnabled: vi.fn(),
+      },
+      initialStatus: { state: 'unsupported', lastRecordedAt: null, error: null },
+    });
+
+    expect(screen.getByText('Not supported on this system')).toBeTruthy();
+    expect(screen.queryByRole('button')).toBeNull();
   });
 });

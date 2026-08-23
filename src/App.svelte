@@ -7,6 +7,7 @@
   import EmptyState from './lib/components/EmptyState.svelte';
   import ExecutionContextNotice from './lib/components/ExecutionContextNotice.svelte';
   import MetricCard from './lib/components/MetricCard.svelte';
+  import RecorderSettings from './lib/components/RecorderSettings.svelte';
   import { isMetricAvailable, type Metric } from './lib/domain/battery';
   import {
     dashboardScenarioCatalog,
@@ -23,6 +24,7 @@
     type BatteryDashboardData,
     type BatteryDashboardResponseDto,
   } from './lib/services/battery-dashboard-client';
+  import { createDesktopRecorderClient } from './lib/services/recorder-client';
 
   const defaultScenario =
     findDashboardScenario(dashboardScenarioCatalog.defaultScenarioId) ??
@@ -39,6 +41,7 @@
   );
   let liveDashboard = $state<BatteryDashboardData | null>(null);
   let isRefreshingLiveData = $state(false);
+  const recorderClient = createDesktopRecorderClient();
 
   let scenario = $derived(findDashboardScenario(selectedScenarioId) ?? defaultScenario);
   let batteries = $derived(liveDashboard?.batteries ?? scenario.batteries);
@@ -163,7 +166,9 @@
 </script>
 
 <svelte:head>
-  <title>Battery Dashboard — Simulated preview</title>
+  <title
+    >{isLiveData ? 'Battery Dashboard' : 'Battery Dashboard — Simulated preview'}</title
+  >
   <meta
     name="description"
     content="A simulated preview of the local-first Battery Dashboard interface."
@@ -175,7 +180,9 @@
     <div class="brand">
       <p class="eyebrow">Local-first Linux utility</p>
       <p class="brand__name">Battery Dashboard</p>
-      <p class="brand__detail">Phase 2 simulated preview</p>
+      <p class="brand__detail">
+        {isLiveData ? 'Native local dashboard' : 'Browser simulated preview'}
+      </p>
     </div>
 
     <SectionNavigation
@@ -199,8 +206,8 @@
 
     <p class="sidebar__note">
       {isLiveData
-        ? 'Live data is read locally. Recording and storage are not implemented in this phase.'
-        : 'These values are fixtures only. No battery data is read or stored in this phase.'}
+        ? 'Live data and recorder controls stay local to this device.'
+        : 'These values are fixtures only. No battery data is read or stored in this browser preview.'}
     </p>
   </aside>
 
@@ -309,9 +316,9 @@
 
         {#if isLiveData}
           <EmptyState
-            title="Recent history is not recorded yet"
-            message="Live readings are available now. Charts will use the optional local recorder in a later phase."
-            hint="No measurements are persisted while recording has not been implemented and enabled."
+            title="Recent history chart arrives next"
+            message="The optional local recorder can be managed in Settings. Stored samples will appear in the dashboard chart phase."
+            hint="No sample is created until background recording is explicitly enabled."
           />
         {:else}
           <section class="chart-grid" aria-label="Simulated charts">
@@ -340,6 +347,10 @@
           hint="The real application will show this state instead of inventing measurements."
         />
       {/if}
+    {:else if activeSection === 'settings'}
+      <section class="settings-panel">
+        <RecorderSettings client={recorderClient} />
+      </section>
     {:else}
       <section class="planned-panel">
         <p class="eyebrow">Planned screen</p>

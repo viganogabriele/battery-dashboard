@@ -57,10 +57,13 @@ and source precedence. It also uses a live Arch hardware smoke test through the
 native Tauri command. The smoke test confirms only that the current machine can
 be read; it does not turn its firmware fields into a portability guarantee.
 
-The persistence phase will add migration, rollback, concurrency, integrity,
-recorder, and systemd user-unit checks. Later phases will add chart range and
-downsampling checks, session reconstruction, timezone/DST aggregation, health
-calculation, CSV escaping, JSON round trips, and installer lifecycle tests.
+Phase 5 adds migration, duplicate/rollback, integrity, one-shot recorder,
+systemd user-unit template, and explicit staging checks. The recorder is also
+smoke-tested against real UPower/sysfs data using a temporary XDG data home, so
+test samples do not alter normal user history. Later phases will add chart
+range and downsampling checks, session reconstruction, timezone/DST
+aggregation, health calculation, CSV escaping, JSON round trips, and installer
+lifecycle tests.
 
 ## Real hardware checks
 

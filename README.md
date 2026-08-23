@@ -14,7 +14,7 @@ interfaces are supported, but they are not yet official targets.
 
 ## Current status
 
-Phases 1–4 are complete. The repository includes the Tauri 2 desktop shell,
+Phases 1–5 are complete. The repository includes the Tauri 2 desktop shell,
 the Svelte/Vite/Tailwind scaffold, a small platform-neutral Rust domain crate, a
 responsive dashboard, metric cards, SVG charts, typed fixture scenarios, and
 navigation placeholders for later screens. The scenario selector exercises
@@ -24,8 +24,10 @@ data, and no-battery states without accessing hardware.
 The Tauri desktop shell has one normal window, no tray or top-bar icon, and no
 production HTTP server. It reads current battery data locally from UPower and
 Linux sysfs, falls back per field when either source is incomplete, and shows
-the origin of each metric. There is still no database, recorder, export, or
-Omarchy plugin. The browser preview keeps its simulated data explicitly marked.
+the origin of each metric. SQLite history and an opt-in one-shot recorder are
+now available through a systemd user timer. There is still no history chart,
+session view, export, or Omarchy plugin. The browser preview keeps its
+simulated data explicitly marked.
 
 The product will be built incrementally: simulated UI first, then Tauri,
 real battery data, persistent recording, history, health, and export. The
@@ -102,23 +104,29 @@ workflow: Vite serves frontend assets only during development. The installed
 application loads its packaged static assets directly and does not start an HTTP
 server.
 
-### Temporary Phase 3 install and removal
+### Current development install and removal
 
 Packaging and a supported installer are not available yet. Until they are,
 use the development command above rather than treating build output as a
-system-wide installation. Removing the development checkout or generated build
-artifacts does not remove any user battery history, because this phase does not
-create a database or recorder. A per-user installer, uninstaller, desktop
-entry, and explicit history purge workflow are planned for the release phase.
+system-wide installation. `pnpm tauri dev` also builds the separate recorder
+binary, but it does **not** enable recording. In Desktop Settings, enabling it
+explicitly stages a copy below the user's XDG data directory and creates user
+units below the XDG config directory; it then uses `systemctl --user` to enable
+the timer. Disabling stops future samples and preserves history.
+
+The development checkout is not an uninstaller. A release installer,
+uninstaller, desktop entry, and explicit history-purge workflow remain planned
+for the release phase. The database is stored at
+`${XDG_DATA_HOME:-~/.local/share}/battery-dashboard/battery.sqlite3`; do not
+delete it unless intentionally purging local history.
 
 ## Privacy and background recording
 
-All measurements are designed to remain on the local machine. The Phase 3
-desktop shell does not add network access, cloud communication, telemetry, or
-background recording. Later recording will be disabled by default and
-explicitly enabled by the user. It will be managed with `systemctl --user`,
-not `sudo` or `pkexec`; disabling it will preserve history unless the user
-explicitly purges it.
+All measurements remain on the local machine. Background recording is disabled
+by default and must be explicitly enabled in the desktop Settings screen. It is
+managed with `systemctl --user`, not `sudo` or `pkexec`; disabling it preserves
+history unless the user explicitly purges it. The recorder is a short-lived
+process every 60 seconds, not a daemon or web server.
 
 Read [the privacy policy](docs/privacy.md) and [the architecture overview](docs/architecture.md)
 for the intended data flow and boundaries.
@@ -134,6 +142,7 @@ bar item itself.
 
 - [Product and development plan](DEVELOPMENT_PLAN.md)
 - [Architecture](docs/architecture.md)
+- [Local data model](docs/data-model.md)
 - [Hardware support and limitations](docs/hardware-support.md)
 - [Privacy](docs/privacy.md)
 - [Testing strategy](docs/testing.md)

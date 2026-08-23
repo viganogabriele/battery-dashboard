@@ -1,0 +1,13 @@
+[Unit]
+Description=Run Battery Dashboard recorder every minute
+Documentation=https://github.com/viganogabriele/battery-dashboard
+
+[Timer]
+OnStartupSec=1min
+OnUnitActiveSec=60s
+AccuracySec=1s
+Persistent=false
+Unit=battery-dashboard-recorder.service
+
+[Install]
+WantedBy=timers.target

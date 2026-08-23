@@ -23,50 +23,73 @@ const MIN_TEMPERATURE_CELSIUS: f64 = -100.0;
 const MAX_TEMPERATURE_CELSIUS: f64 = 200.0;
 
 /// The JSON payload consumed by the Svelte battery dashboard.
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BatteryDashboardResponse {
-    schema_version: u8,
-    collected_at: Option<String>,
-    stale: bool,
-    batteries: Vec<BatteryResponse>,
+    /// Version of the typed desktop payload.
+    pub schema_version: u8,
+    /// Time at which the providers were queried, in UTC RFC 3339 form.
+    pub collected_at: Option<String>,
+    /// Whether the complete response is known to be out of date.
+    pub stale: bool,
+    /// Individual physical batteries discovered at collection time.
+    pub batteries: Vec<BatteryResponse>,
 }
 
 /// One physical battery in a [`BatteryDashboardResponse`].
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct BatteryResponse {
-    id: String,
-    label: String,
-    state: &'static str,
-    updated_at: Option<String>,
-    metrics: BatteryMetricsResponse,
+pub struct BatteryResponse {
+    /// Stable provider identifier, such as `BAT0`.
+    pub id: String,
+    /// User-readable vendor/model label when hardware provides one.
+    pub label: String,
+    /// Normalized charging state.
+    pub state: &'static str,
+    /// Collection timestamp for this battery.
+    pub updated_at: Option<String>,
+    /// Individual measurements with field-level provenance.
+    pub metrics: BatteryMetricsResponse,
 }
 
 /// Live metrics for one physical battery.
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct BatteryMetricsResponse {
-    percentage: MetricResponse,
-    energy_now_wh: MetricResponse,
-    energy_full_wh: MetricResponse,
-    energy_design_wh: MetricResponse,
-    power_watts: MetricResponse,
-    voltage_volts: MetricResponse,
-    current_amps: MetricResponse,
-    temperature_celsius: MetricResponse,
-    time_remaining_minutes: MetricResponse,
-    cycle_count: MetricResponse,
+pub struct BatteryMetricsResponse {
+    /// Charge percentage.
+    pub percentage: MetricResponse,
+    /// Remaining energy in watt-hours.
+    pub energy_now_wh: MetricResponse,
+    /// Current maximum energy in watt-hours.
+    pub energy_full_wh: MetricResponse,
+    /// Design energy in watt-hours.
+    pub energy_design_wh: MetricResponse,
+    /// Signed charging/discharging power in watts.
+    pub power_watts: MetricResponse,
+    /// Voltage in volts.
+    pub voltage_volts: MetricResponse,
+    /// Signed current in amperes.
+    pub current_amps: MetricResponse,
+    /// Temperature in degrees Celsius.
+    pub temperature_celsius: MetricResponse,
+    /// Provider-supported time-to-full or time-to-empty estimate in minutes.
+    pub time_remaining_minutes: MetricResponse,
+    /// Hardware charge-cycle count.
+    pub cycle_count: MetricResponse,
 }
 
 /// A single metric with explicit provenance and availability.
-#[derive(Serialize)]
+#[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct MetricResponse {
-    value: Option<f64>,
-    source: &'static str,
-    availability: &'static str,
-    updated_at: Option<String>,
+pub struct MetricResponse {
+    /// Numeric measurement when a provider supplies one.
+    pub value: Option<f64>,
+    /// Source selected by the composite provider.
+    pub source: &'static str,
+    /// Availability state of this metric.
+    pub availability: &'static str,
+    /// Field update time when available.
+    pub updated_at: Option<String>,
 }
 
 /// Reads and composes the currently available physical batteries.
