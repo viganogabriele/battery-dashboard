@@ -43,6 +43,19 @@ The database stores actual samples only. A boot ID change, absent sample, timer
 downtime, suspend, shutdown, or missing battery is a gap. No rows are invented
 to fill it.
 
+## Recent-history reads
+
+The desktop reads a bounded UTC range for the selected physical battery or the
+aggregate view. Reads never create the database: before the first recorder run
+the dashboard reports that no stored history exists. The query keeps both ends
+of a detected gap and downsamples only ordinary points, so a compact chart
+cannot silently join two unrelated measurements.
+
+The current live dashboard value may be appended in memory as a `transient`
+point. It is visibly distinct from persisted data and is not a recorder write.
+If the recorder is disabled, sparse, stale, or unavailable, the UI says so and
+does not infer charge, discharge, energy change, or a missing timeline.
+
 ## SQLite operation
 
 Each connection enables WAL mode, foreign keys, and a five-second busy timeout.

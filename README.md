@@ -14,7 +14,7 @@ interfaces are supported, but they are not yet official targets.
 
 ## Current status
 
-Phases 1–5 are complete. The repository includes the Tauri 2 desktop shell,
+Phases 1–6 are complete. The repository includes the Tauri 2 desktop shell,
 the Svelte/Vite/Tailwind scaffold, a small platform-neutral Rust domain crate, a
 responsive dashboard, metric cards, SVG charts, typed fixture scenarios, and
 navigation placeholders for later screens. The scenario selector exercises
@@ -25,9 +25,12 @@ The Tauri desktop shell has one normal window, no tray or top-bar icon, and no
 production HTTP server. It reads current battery data locally from UPower and
 Linux sysfs, falls back per field when either source is incomplete, and shows
 the origin of each metric. SQLite history and an opt-in one-shot recorder are
-now available through a systemd user timer. There is still no history chart,
-session view, export, or Omarchy plugin. The browser preview keeps its
-simulated data explicitly marked.
+now available through a systemd user timer. The native dashboard has a recent
+history chart with two-, six-, twelve-, and twenty-four-hour ranges. It uses
+stored samples when present, adds the current live reading as explicitly
+transient, and renders real gaps instead of inventing a continuous line. There
+is still no session view, calendar history, export, or Omarchy plugin. The
+browser preview keeps its simulated data explicitly marked.
 
 The product will be built incrementally: simulated UI first, then Tauri,
 real battery data, persistent recording, history, health, and export. The

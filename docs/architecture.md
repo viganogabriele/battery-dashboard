@@ -84,6 +84,12 @@ available. Suspends, shutdowns, reboots, removed batteries, and large
 collection gaps create real boundaries; they are not reconstructed by
 interpolation.
 
+The desktop's recent-history command is read-only. It requests a bounded
+two-, six-, twelve-, or twenty-four-hour range without creating an empty
+database, applies endpoint-preserving downsampling, and returns explicit gaps.
+It can append the current live value only as an in-memory transient point;
+that point is never persisted by opening the dashboard.
+
 Background recording is opt-in and disabled by default. When a user enables it,
 the app stages a recorder binary and unit files under user-owned XDG paths:
 

@@ -751,7 +751,7 @@ Exit tests:
 
 This completes the technical MVP.
 
-### Phase 6 — Main dashboard and recent-history chart
+### Phase 6 — Main dashboard and recent-history chart — Complete
 
 Deliverables:
 

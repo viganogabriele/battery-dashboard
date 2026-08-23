@@ -60,10 +60,12 @@ be read; it does not turn its firmware fields into a portability guarantee.
 Phase 5 adds migration, duplicate/rollback, integrity, one-shot recorder,
 systemd user-unit template, and explicit staging checks. The recorder is also
 smoke-tested against real UPower/sysfs data using a temporary XDG data home, so
-test samples do not alter normal user history. Later phases will add chart
-range and downsampling checks, session reconstruction, timezone/DST
-aggregation, health calculation, CSV escaping, JSON round trips, and installer
-lifecycle tests.
+test samples do not alter normal user history. Phase 6 adds bounded-range,
+downsampling, per-battery gap, empty-history, transient-live-point, and chart
+state tests. Its browser check verifies the simulated preview remains clearly
+separate from the native recorder-backed chart. Later phases will add session
+reconstruction, timezone/DST aggregation, health calculation, CSV escaping,
+JSON round trips, and installer lifecycle tests.
 
 ## Real hardware checks
 

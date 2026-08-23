@@ -7,6 +7,9 @@
   import EmptyState from './lib/components/EmptyState.svelte';
   import ExecutionContextNotice from './lib/components/ExecutionContextNotice.svelte';
   import MetricCard from './lib/components/MetricCard.svelte';
+  import RecentHistoryChart, {
+    type RecentHistoryRecorderState,
+  } from './lib/components/RecentHistoryChart.svelte';
   import RecorderSettings from './lib/components/RecorderSettings.svelte';
   import { isMetricAvailable, type Metric } from './lib/domain/battery';
   import {
@@ -25,6 +28,11 @@
     type BatteryDashboardResponseDto,
   } from './lib/services/battery-dashboard-client';
   import { createDesktopRecorderClient } from './lib/services/recorder-client';
+  import {
+    createDesktopRecentBatteryHistoryClient,
+    type RecentBatteryHistoryData,
+    type RecentHistoryRangeHours,
+  } from './lib/services/recent-history-client';
 
   const defaultScenario =
     findDashboardScenario(dashboardScenarioCatalog.defaultScenarioId) ??
@@ -41,7 +49,11 @@
   );
   let liveDashboard = $state<BatteryDashboardData | null>(null);
   let isRefreshingLiveData = $state(false);
+  let recentHistory = $state<RecentBatteryHistoryData | null>(null);
+  let isRefreshingHistory = $state(false);
+  let historyRange = $state<RecentHistoryRangeHours>(24);
   const recorderClient = createDesktopRecorderClient();
+  const recentHistoryClient = createDesktopRecentBatteryHistoryClient();
 
   let scenario = $derived(findDashboardScenario(selectedScenarioId) ?? defaultScenario);
   let batteries = $derived(liveDashboard?.batteries ?? scenario.batteries);
@@ -76,6 +88,39 @@
       value: point.percentage,
     })),
   );
+  let recentHistoryPoints = $derived(
+    recentHistory?.points.map((point) => ({
+      timestamp: point.recordedAt,
+      percentage: point.percentage.value,
+      state: point.state,
+      persisted: point.kind === 'persisted',
+    })) ?? [],
+  );
+  let recentHistoryGaps = $derived(
+    recentHistory?.gaps
+      .filter((gap) => gap.endsAt !== null)
+      .map((gap) => ({
+        start: gap.startsAt,
+        end: gap.endsAt ?? gap.startsAt,
+        reason: gap.reason.replace('-', ' '),
+      })) ?? [],
+  );
+  let recentHistorySummary = $derived(
+    recentHistory
+      ? {
+          minimumPercentage: recentHistory.summary.percentage.minimum,
+          maximumPercentage: recentHistory.summary.percentage.maximum,
+          averagePercentage: recentHistory.summary.percentage.average,
+          observedEnergyWh: recentHistory.summary.observedEnergyWh.change,
+        }
+      : null,
+  );
+  let recentHistoryRecorderState = $derived.by<RecentHistoryRecorderState>(() => {
+    if (recentHistory?.unavailableReason === 'recorder-disabled') return 'disabled';
+    if (recentHistory?.unavailableReason === 'unsupported') return 'unsupported';
+    if (recentHistory?.unavailableReason === 'database-unavailable') return 'error';
+    return 'enabled';
+  });
 
   function selectScenario(id: string) {
     const nextScenario = findDashboardScenario(id);
@@ -87,6 +132,16 @@
         ? 'all-batteries'
         : (nextScenario.batteries[0]?.id ?? 'all-batteries');
     activeSection = 'dashboard';
+  }
+
+  function selectBattery(id: string) {
+    selectedBatteryId = id;
+    if (isLiveData) void refreshRecentHistory(id);
+  }
+
+  function selectHistoryRange(range: RecentHistoryRangeHours) {
+    historyRange = range;
+    if (isLiveData) void refreshRecentHistory();
   }
 
   async function refreshLiveData() {
@@ -101,15 +156,41 @@
       const dashboard = await client.getDashboard();
 
       liveDashboard = dashboard;
-      selectedBatteryId =
+      const suggestedBatteryId =
         dashboard.batteries.length > 1
           ? 'all-batteries'
           : (dashboard.batteries[0]?.id ?? 'all-batteries');
+      const selectionIsStillAvailable =
+        selectedBatteryId === 'all-batteries'
+          ? dashboard.batteries.length > 1
+          : dashboard.batteries.some((battery) => battery.id === selectedBatteryId);
+      selectedBatteryId = selectionIsStillAvailable
+        ? selectedBatteryId
+        : suggestedBatteryId;
+      await refreshRecentHistory(selectedBatteryId);
     } catch {
       // The browser preview deliberately keeps its fixtures when Tauri is absent.
       liveDashboard = null;
+      recentHistory = null;
     } finally {
       isRefreshingLiveData = false;
+    }
+  }
+
+  async function refreshRecentHistory(batteryId = selectedBatteryId) {
+    if (isRefreshingHistory) return;
+
+    isRefreshingHistory = true;
+    try {
+      recentHistory = await recentHistoryClient.getRecentHistory({
+        batteryId: batteryId === 'all-batteries' ? undefined : batteryId,
+        rangeHours: historyRange,
+        maxPoints: Math.min(historyRange * 60, 720),
+      });
+    } catch {
+      recentHistory = null;
+    } finally {
+      isRefreshingHistory = false;
     }
   }
 
@@ -253,7 +334,7 @@
               <BatterySelector
                 batteries={batteryOptions}
                 selectedId={selectedBatteryId}
-                onSelect={(id) => (selectedBatteryId = id)}
+                onSelect={selectBattery}
               />
             {/if}
             <p>
@@ -315,10 +396,14 @@
         </section>
 
         {#if isLiveData}
-          <EmptyState
-            title="Recent history chart arrives next"
-            message="The optional local recorder can be managed in Settings. Stored samples will appear in the dashboard chart phase."
-            hint="No sample is created until background recording is explicitly enabled."
+          <RecentHistoryChart
+            points={recentHistoryPoints}
+            gaps={recentHistoryGaps}
+            summary={recentHistorySummary}
+            loading={isRefreshingHistory}
+            recorderState={recentHistoryRecorderState}
+            selectedRange={historyRange}
+            onRangeChange={selectHistoryRange}
           />
         {:else}
           <section class="chart-grid" aria-label="Simulated charts">

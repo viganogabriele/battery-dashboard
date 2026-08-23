@@ -7,6 +7,7 @@ import EmptyState from './EmptyState.svelte';
 import ExecutionContextNotice from './ExecutionContextNotice.svelte';
 import MetricCard from './MetricCard.svelte';
 import RecorderSettings from './RecorderSettings.svelte';
+import RecentHistoryChart from './RecentHistoryChart.svelte';
 
 describe('battery dashboard presentation components', () => {
   it('marks an unavailable stale metric honestly', () => {
@@ -112,5 +113,68 @@ describe('battery dashboard presentation components', () => {
 
     expect(screen.getByText('Not supported on this system')).toBeTruthy();
     expect(screen.queryByRole('button')).toBeNull();
+  });
+
+  it('keeps history gaps visible and never presents them as a continuous reading', () => {
+    render(RecentHistoryChart, {
+      recorderState: 'enabled',
+      points: [
+        {
+          timestamp: '2026-01-01T09:00:00Z',
+          percentage: 70,
+          state: 'discharging',
+          persisted: true,
+        },
+        {
+          timestamp: '2026-01-01T10:00:00Z',
+          percentage: 68,
+          state: 'discharging',
+          persisted: true,
+        },
+      ],
+      gaps: [
+        {
+          start: '2026-01-01T09:10:00Z',
+          end: '2026-01-01T09:50:00Z',
+          reason: 'computer was suspended',
+        },
+      ],
+    });
+
+    expect(screen.getByText('History has gaps.')).toBeTruthy();
+    expect(screen.getByText(/computer was suspended/)).toBeTruthy();
+    expect(document.querySelectorAll('.recent-history__line')).toHaveLength(0);
+  });
+
+  it('reports a chosen range and only renders explicitly supplied summary values', async () => {
+    const onRangeChange = vi.fn();
+    render(RecentHistoryChart, {
+      recorderState: 'enabled',
+      selectedRange: 24,
+      onRangeChange,
+      points: [
+        {
+          timestamp: '2026-01-01T09:00:00Z',
+          percentage: 70,
+          state: 'charging',
+          persisted: false,
+        },
+      ],
+      summary: { minimumPercentage: 65, observedEnergyWh: 3.4 },
+    });
+
+    await fireEvent.click(screen.getByRole('button', { name: '6h' }));
+
+    expect(onRangeChange).toHaveBeenCalledWith(6);
+    expect(screen.getByText('65%')).toBeTruthy();
+    expect(screen.getByText('3.4 Wh')).toBeTruthy();
+    expect(screen.queryByText('Average')).toBeNull();
+    expect(screen.getByText('Transient live readings are shown.')).toBeTruthy();
+  });
+
+  it('explains why there is no persistent history when recording is disabled', () => {
+    render(RecentHistoryChart, { points: [], recorderState: 'disabled' });
+
+    expect(screen.getByText(/Enable recording to collect local readings/)).toBeTruthy();
   });
 });
