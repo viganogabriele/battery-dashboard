@@ -43,6 +43,7 @@ and share them deliberately.
 
 ## Current status
 
-These are design commitments for planned functionality. Phase 1 does not yet
-create a database, collect battery measurements, install a timer, or export
-any data.
+These are design commitments for planned functionality. During Phase 3, the
+Tauri desktop shell continues to display only bundled simulated fixtures. It
+does not create a database, collect battery measurements, install a timer,
+export data, start a network service, or send data off the device.

@@ -7,9 +7,10 @@ It captures the agreed product scope, architecture, portability strategy,
 development phases, quality gates, privacy constraints, and known hardware
 limitations.
 
-Phases 1 and 2 are complete: the repository foundation and a simulated Svelte
-dashboard are implemented. Implementation continues phase by phase. Advanced
-features must not be implemented before the core version is stable.
+Phases 1–3 are complete: the repository foundation, simulated Svelte dashboard,
+and Tauri desktop shell are implemented. Implementation continues phase by
+phase. Advanced features must not be implemented before the core version is
+stable.
 
 ## 2. Product vision
 
@@ -676,7 +677,7 @@ Exit tests:
 - responsive and accessibility smoke checks;
 - TypeScript check and production frontend build.
 
-### Phase 3 — Tauri desktop application and visual theme
+### Phase 3 — Tauri desktop application and visual theme — Complete
 
 Deliverables:
 

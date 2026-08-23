@@ -17,6 +17,9 @@ describe('App', () => {
     expect(
       screen.getByText('Simulated data', { selector: '.preview-badge' }),
     ).toBeTruthy();
+    expect(
+      screen.getByRole('heading', { name: 'Simulated battery data' }),
+    ).toBeTruthy();
     expect(screen.getByText(/No battery data is read or stored/)).toBeTruthy();
     expect(screen.getByRole('meter', { name: 'Battery charge: 63%' })).toBeTruthy();
   });

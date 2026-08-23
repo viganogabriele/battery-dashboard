@@ -14,17 +14,17 @@ interfaces are supported, but they are not yet official targets.
 
 ## Current status
 
-The repository has completed **Phase 2: the simulated Svelte dashboard**.
-It includes the Svelte/Vite/Tailwind scaffold, a small platform-neutral Rust
-domain crate, a responsive dashboard, metric cards, SVG charts, typed fixture
-scenarios, and navigation placeholders for later screens. The scenario selector
-exercises single and multiple batteries, charging, incomplete telemetry, stale
-suspend data, and no-battery states without accessing hardware.
+Phases 1–3 are complete. The repository includes the Tauri 2 desktop shell,
+the Svelte/Vite/Tailwind scaffold, a small platform-neutral Rust domain crate, a
+responsive dashboard, metric cards, SVG charts, typed fixture scenarios, and
+navigation placeholders for later screens. The scenario selector exercises
+single and multiple batteries, charging, incomplete telemetry, stale suspend
+data, and no-battery states without accessing hardware.
 
-There is still no live battery reader, database, recorder, desktop window,
-export, or Omarchy plugin. The simulation is deliberately visible in the UI
-and does not read or store battery data. Phase 3 will place this UI in a Tauri
-desktop window while retaining the fixtures.
+The Tauri desktop shell has one normal window, no tray or top-bar icon, and no
+production HTTP server. There is still no live battery reader, database,
+recorder, export, or Omarchy plugin. The simulated data is deliberately visible
+in the UI and does not read or store battery data.
 
 The product will be built incrementally: simulated UI first, then Tauri,
 real battery data, persistent recording, history, health, and export. The
@@ -75,9 +75,15 @@ begin; see the [planned layout](DEVELOPMENT_PLAN.md#8-planned-repository-layout)
 
 ## Prerequisites and development workflow
 
-The current scaffold requires Rust 1.85 or newer, Node.js 22 or newer, and
-pnpm 11. Native WebKitGTK/Tauri build dependencies will become mandatory in
-Phase 3 and will be documented as validated Arch package names at that point.
+The project requires Rust 1.85 or newer, Node.js 22 or newer, and pnpm 11.
+For Arch Linux development, Tauri's official Linux prerequisites currently
+list `webkit2gtk-4.1`, `base-devel`, `curl`, `wget`, `file`, `openssl`,
+`appmenu-gtk-module`, `libappindicator-gtk3`, `librsvg`, and `xdotool`.
+Install system packages with your normal package-management process; this is a
+development-machine requirement, not a request for the application to use
+`sudo`, `pkexec`, or any privileged helper. See the
+[official Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
+for the current package list and non-Arch distribution instructions.
 
 The current quality workflow is:
 
@@ -89,16 +95,29 @@ pnpm build
 cargo test --workspace
 ```
 
-Tauri development and release commands will be added with Phase 3. Exact
-commands are intentionally not presented as available before their scripts
-exist.
+Start the native development window with `pnpm tauri dev` and build the desktop
+bundle with `pnpm tauri build`. These commands are not a web deployment
+workflow: Vite serves frontend assets only during development. The installed
+application loads its packaged static assets directly and does not start an HTTP
+server.
+
+### Temporary Phase 3 install and removal
+
+Packaging and a supported installer are not available yet. Until they are,
+use the development command above rather than treating build output as a
+system-wide installation. Removing the development checkout or generated build
+artifacts does not remove any user battery history, because this phase does not
+create a database or recorder. A per-user installer, uninstaller, desktop
+entry, and explicit history purge workflow are planned for the release phase.
 
 ## Privacy and background recording
 
-All measurements are designed to remain on the local machine. Recording will
-be disabled by default and explicitly enabled by the user. It will be managed
-with `systemctl --user`, not `sudo` or `pkexec`; disabling it will preserve
-history unless the user explicitly purges it.
+All measurements are designed to remain on the local machine. The Phase 3
+desktop shell does not add network access, cloud communication, telemetry, or
+background recording. Later recording will be disabled by default and
+explicitly enabled by the user. It will be managed with `systemctl --user`,
+not `sudo` or `pkexec`; disabling it will preserve history unless the user
+explicitly purges it.
 
 Read [the privacy policy](docs/privacy.md) and [the architecture overview](docs/architecture.md)
 for the intended data flow and boundaries.

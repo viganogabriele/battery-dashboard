@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 import BatterySelector from './BatterySelector.svelte';
 import BatteryStateBadge from './BatteryStateBadge.svelte';
 import EmptyState from './EmptyState.svelte';
+import ExecutionContextNotice from './ExecutionContextNotice.svelte';
 import MetricCard from './MetricCard.svelte';
 
 describe('battery dashboard presentation components', () => {
@@ -52,5 +53,25 @@ describe('battery dashboard presentation components', () => {
     });
 
     expect(screen.getByRole('heading', { name: 'No battery detected' })).toBeTruthy();
+  });
+
+  it('discloses when the interface contains simulated data', () => {
+    render(ExecutionContextNotice, { executionContext: 'simulated-preview' });
+
+    expect(
+      screen.getByRole('heading', { name: 'Simulated battery data' }),
+    ).toBeTruthy();
+    expect(
+      screen.getByText(
+        'This screen uses sample readings. It does not read or store system battery data.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('can describe the desktop context without detecting a runtime', () => {
+    render(ExecutionContextNotice, { executionContext: 'native-desktop' });
+
+    expect(screen.getByText('Desktop mode')).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Native desktop window' })).toBeTruthy();
   });
 });

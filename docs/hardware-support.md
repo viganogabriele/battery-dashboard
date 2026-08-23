@@ -12,6 +12,13 @@ KDE, and any particular status bar. Other Linux distributions may work when
 their compatible system components are available, but are not supported until
 tested.
 
+## Current implementation limit
+
+Phase 3 is adding the native Tauri window, not a hardware provider. The
+current dashboard values remain deterministic simulated fixtures. It does not
+yet inspect UPower, D-Bus, `/sys/class/power_supply`, or any real battery, so
+it cannot establish hardware compatibility on the machine where it runs.
+
 ## Expected sources
 
 The planned reader will combine:

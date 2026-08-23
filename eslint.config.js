@@ -6,7 +6,7 @@ import svelteConfig from './svelte.config.js';
 
 export default [
   {
-    ignores: ['dist/', 'node_modules/', 'coverage/'],
+    ignores: ['dist/', 'node_modules/', 'coverage/', 'target/', 'src-tauri/target/'],
   },
   js.configs.recommended,
   ...tseslint.configs.recommended,

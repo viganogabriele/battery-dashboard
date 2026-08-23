@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/battery-core"]
+members = ["crates/battery-core", "src-tauri"]
 resolver = "3"
 
 [workspace.package]

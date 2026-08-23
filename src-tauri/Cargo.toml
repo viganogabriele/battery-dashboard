@@ -1,0 +1,22 @@
+[package]
+name = "battery-dashboard-desktop"
+description = "Native desktop shell for Battery Dashboard."
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+
+[lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+module_name_repetitions = "allow"

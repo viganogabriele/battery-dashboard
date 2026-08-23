@@ -15,9 +15,16 @@ UPower system D-Bus ----+
 systemd --user timer --> one-shot Rust recorder --> SQLite (write) --> exit
 ```
 
-The desktop window is responsible for live display. The recorder is a separate
-one-shot executable so history can continue to be collected while the window
-is closed. It is never a custom daemon.
+Phase 3 introduces the desktop shell around the existing simulated UI. It is
+configured as one normal application window: closing it exits the application,
+and it has no tray or top-bar icon. The shell does not start a production
+localhost server; Vite remains development-only and packaged builds load static
+assets through Tauri.
+
+The desktop window will be responsible for live display once live providers
+are implemented. The recorder will be a separate one-shot executable so
+history can continue to be collected while the window is closed. It is never a
+custom daemon.
 
 ## Portable boundaries
 
@@ -80,10 +87,11 @@ Background recording will be opt-in. Its eventual per-user paths are:
 
 ## Security boundaries
 
-Tauri capabilities will be restrictive. The webview will not receive generic
-shell execution or generic home-directory filesystem access. Rust commands
-will own battery reads, database operations, scheduler management, and
-user-initiated exports. The app will have one normal window and no tray icon.
+Tauri capabilities are being configured restrictively in Phase 3. The webview
+must not receive generic shell execution or generic home-directory filesystem
+access. Rust commands will own future battery reads, database operations,
+scheduler management, and user-initiated exports. The app has one normal window
+and no tray icon.
 
 The optional future Omarchy integration is outside the core runtime. It may
 consume a stable read-only interface, but must not own the recorder or change

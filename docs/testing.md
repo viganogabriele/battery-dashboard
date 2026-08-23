@@ -46,6 +46,11 @@ responsive behavior, and accessibility states with simulated data. The Tauri
 phase will verify the static bundle, one-window behavior, no tray icon, and
 clean process exit.
 
+Phase 3 verifies the static Tauri build, its one-window/no-tray configuration,
+and a short launch of the compiled desktop executable. The existing fixture
+tests remain the source of truth for the simulated dashboard; no real-hardware
+assertion is introduced by the desktop shell.
+
 The persistence phase will add migration, rollback, concurrency, integrity,
 recorder, and systemd user-unit checks. Later phases will add chart range and
 downsampling checks, session reconstruction, timezone/DST aggregation, health

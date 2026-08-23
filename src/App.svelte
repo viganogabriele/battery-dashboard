@@ -3,6 +3,7 @@
   import BatterySelector from './lib/components/BatterySelector.svelte';
   import BatteryStateBadge from './lib/components/BatteryStateBadge.svelte';
   import EmptyState from './lib/components/EmptyState.svelte';
+  import ExecutionContextNotice from './lib/components/ExecutionContextNotice.svelte';
   import MetricCard from './lib/components/MetricCard.svelte';
   import { isMetricAvailable, type Metric } from './lib/domain/battery';
   import {
@@ -168,6 +169,8 @@
       </div>
       <span class="preview-badge">Simulated data</span>
     </header>
+
+    <ExecutionContextNotice executionContext="simulated-preview" />
 
     {#if activeSection === 'dashboard'}
       {#if selectedSnapshot}
