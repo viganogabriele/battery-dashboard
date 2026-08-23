@@ -35,10 +35,12 @@
 
   select {
     min-width: 11rem;
+    max-width: 100%;
+    color-scheme: dark;
     border: 1px solid var(--color-border-subtle);
     border-radius: 0.7rem;
     padding: 0.55rem 2.2rem 0.55rem 0.7rem;
     color: var(--color-text-primary);
-    background: var(--color-surface-raised);
+    background-color: var(--color-surface-raised);
   }
 </style>

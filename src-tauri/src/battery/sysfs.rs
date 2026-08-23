@@ -111,6 +111,28 @@ pub fn read_batteries(root: impl AsRef<Path>) -> io::Result<Vec<SysfsBattery>> {
     Ok(batteries)
 }
 
+/// Returns battery identifiers explicitly scoped to a peripheral device.
+///
+/// Linux exposes wireless mice, keyboards, and similar peripherals as power
+/// supplies. They must not be mixed into a laptop's aggregate battery view.
+pub fn device_scoped_battery_ids(root: impl AsRef<Path>) -> io::Result<Vec<String>> {
+    let mut identifiers = Vec::new();
+    for entry in fs::read_dir(root)? {
+        let Ok(entry) = entry else { continue };
+        let path = entry.path();
+        if read_trimmed(&path.join("type")).as_deref() != Some("Battery")
+            || read_trimmed(&path.join("scope")).as_deref() != Some("Device")
+        {
+            continue;
+        }
+        if let Some(id) = entry.file_name().to_str() {
+            identifiers.push(id.to_owned());
+        }
+    }
+    identifiers.sort_unstable();
+    Ok(identifiers)
+}
+
 fn read_battery(path: &Path, id: String) -> SysfsBattery {
     SysfsBattery {
         id,
@@ -196,7 +218,7 @@ fn read_trimmed(path: &Path) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{SysfsBatteryStatus, read_batteries};
+    use super::{SysfsBatteryStatus, device_scoped_battery_ids, read_batteries};
     use std::{
         fs,
         path::{Path, PathBuf},
@@ -341,5 +363,20 @@ mod tests {
         assert_eq!(batteries[0].id, "BAT2");
         assert_eq!(batteries[0].capacity_percent, None);
         assert_eq!(batteries[0].status, None);
+    }
+
+    #[test]
+    fn identifies_peripheral_batteries_without_hiding_laptop_packs() {
+        let fixture = FixtureDirectory::new();
+        fixture.supply("BAT0", &[("type", "Battery\n"), ("scope", "System\n")]);
+        fixture.supply(
+            "hidpp_battery_0",
+            &[("type", "Battery\n"), ("scope", "Device\n")],
+        );
+
+        assert_eq!(
+            device_scoped_battery_ids(fixture.path()).expect("fixture is readable"),
+            vec!["hidpp_battery_0"]
+        );
     }
 }

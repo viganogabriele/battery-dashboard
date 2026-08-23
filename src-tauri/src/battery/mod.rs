@@ -101,13 +101,17 @@ pub struct MetricResponse {
 pub async fn read_dashboard() -> BatteryDashboardResponse {
     let timestamp = now_rfc3339();
     let sysfs = sysfs::read_batteries(SYSFS_POWER_SUPPLY_ROOT).unwrap_or_default();
+    let device_scoped_ids = sysfs::device_scoped_battery_ids(SYSFS_POWER_SUPPLY_ROOT)
+        .unwrap_or_default()
+        .into_iter()
+        .collect::<BTreeSet<_>>();
     let upower = upower::enumerate_batteries().await.unwrap_or_default();
 
     BatteryDashboardResponse {
         schema_version: 1,
         collected_at: timestamp.clone(),
         stale: false,
-        batteries: compose_batteries(&sysfs, &upower, timestamp.as_deref()),
+        batteries: compose_batteries(&sysfs, &upower, &device_scoped_ids, timestamp.as_deref()),
     }
 }
 
@@ -118,15 +122,18 @@ fn now_rfc3339() -> Option<String> {
 fn compose_batteries(
     sysfs_batteries: &[SysfsBattery],
     upower_batteries: &[UpowerBattery],
+    device_scoped_ids: &BTreeSet<String>,
     timestamp: Option<&str>,
 ) -> Vec<BatteryResponse> {
     let sysfs_by_id = sysfs_batteries
         .iter()
+        .filter(|battery| !device_scoped_ids.contains(&battery.id))
         .map(|battery| (battery.id.as_str(), battery))
         .collect::<BTreeMap<_, _>>();
     let upower_by_id = upower_batteries
         .iter()
         .filter_map(|battery| normalized_upower_id(battery).map(|id| (id, battery)))
+        .filter(|(id, _)| !device_scoped_ids.contains(*id))
         .collect::<BTreeMap<_, _>>();
     let ids = sysfs_by_id
         .keys()
@@ -368,7 +375,11 @@ fn non_negative_i32(value: Option<i32>) -> Option<f64> {
 
 fn temperature(value: Option<f64>) -> Option<f64> {
     value.filter(|value| {
-        value.is_finite() && (MIN_TEMPERATURE_CELSIUS..=MAX_TEMPERATURE_CELSIUS).contains(value)
+        // UPower reports 0.0 when a device does not expose a temperature.
+        // Do not present that sentinel as a real hardware measurement.
+        value.is_finite()
+            && *value > 0.0
+            && (MIN_TEMPERATURE_CELSIUS..=MAX_TEMPERATURE_CELSIUS).contains(value)
     })
 }
 
@@ -385,7 +396,7 @@ impl MetricResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{MetricResponse, normalized_upower_id, percentage, signed_for_state};
+    use super::{MetricResponse, normalized_upower_id, percentage, signed_for_state, temperature};
     use crate::battery::upower::UpowerBattery;
 
     #[test]
@@ -433,5 +444,11 @@ mod tests {
         let metric = MetricResponse::unavailable();
         assert_eq!(metric.value, None);
         assert_eq!(metric.source, "unavailable");
+    }
+
+    #[test]
+    fn does_not_present_upower_temperature_sentinel_as_a_measurement() {
+        assert_eq!(temperature(Some(0.0)), None);
+        assert_eq!(temperature(Some(31.5)), Some(31.5));
     }
 }

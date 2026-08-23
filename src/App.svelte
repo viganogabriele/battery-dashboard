@@ -4,7 +4,6 @@
   import BatterySelector from './lib/components/BatterySelector.svelte';
   import BatteryStateBadge from './lib/components/BatteryStateBadge.svelte';
   import EmptyState from './lib/components/EmptyState.svelte';
-  import ExecutionContextNotice from './lib/components/ExecutionContextNotice.svelte';
   import MetricCard from './lib/components/MetricCard.svelte';
   import RecentHistoryChart, {
     type RecentHistoryRecorderState,
@@ -261,7 +260,6 @@
     return new Intl.DateTimeFormat(undefined, {
       dateStyle: 'medium',
       timeStyle: 'short',
-      timeZone: 'UTC',
     }).format(new Date(timestamp));
   }
 
@@ -306,16 +304,17 @@
       <span class="preview-badge">{isLiveData ? 'Live data' : 'Unavailable'}</span>
     </header>
 
-    {#if isNativeRuntime}<ExecutionContextNotice
-        executionContext="native-desktop"
-      />{/if}
-
     {#if activeSection === 'dashboard'}
       {#if selectedSnapshot}
         <section class="dashboard-hero" aria-label="Selected battery overview">
           <div class="dashboard-hero__charge">
             <p class="metric-label">Current charge</p>
-            <p class="charge-value">
+            <p
+              class="charge-value"
+              class:charge-value--unavailable={!isMetricAvailable(
+                selectedSnapshot.percentage,
+              )}
+            >
               {formatMetric(selectedSnapshot.percentage, '%', 0) ?? 'Unavailable'}
             </p>
             {#if isMetricAvailable(selectedSnapshot.percentage)}

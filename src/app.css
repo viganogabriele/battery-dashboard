@@ -16,6 +16,7 @@
 }
 
 :root {
+  color-scheme: dark;
   color: var(--color-text-primary);
   background: var(--color-canvas);
   font-family:
@@ -214,6 +215,10 @@ h1 {
     var(--color-surface-raised);
 }
 
+.dashboard-hero > * {
+  min-width: 0;
+}
+
 .metric-label {
   color: var(--color-text-secondary);
   font-size: 0.9rem;
@@ -222,10 +227,15 @@ h1 {
 
 .charge-value {
   margin: 0.2rem 0 0;
-  font-size: clamp(3.1rem, 8vw, 5.75rem);
+  font-size: clamp(3rem, 6vw, 4.75rem);
   font-weight: 740;
   letter-spacing: -0.075em;
   line-height: 0.95;
+}
+
+.charge-value--unavailable {
+  font-size: clamp(2.1rem, 4.5vw, 3.5rem);
+  overflow-wrap: anywhere;
 }
 
 .charge-unavailable {
@@ -293,7 +303,9 @@ meter {
   }
 }
 
-@media (max-width: 54rem) {
+/* Keep the two-column desktop composition only when both columns have room.
+   This also covers fractional display scaling common on Linux desktops. */
+@media (max-width: 60rem) {
   .dashboard-app {
     display: block;
   }
