@@ -14,12 +14,17 @@ interfaces are supported, but they are not yet official targets.
 
 ## Current status
 
-The repository has completed **Phase 1: project structure and documentation**.
-The Svelte/Vite/Tailwind scaffold, a small platform-neutral Rust domain crate,
-and the first quality checks are present. Product features are not implemented
-yet: there is no live battery reader, database, recorder, desktop window,
-export, or Omarchy plugin at this stage. Phase 2 will build the simulated
-dashboard on this foundation.
+The repository has completed **Phase 2: the simulated Svelte dashboard**.
+It includes the Svelte/Vite/Tailwind scaffold, a small platform-neutral Rust
+domain crate, a responsive dashboard, metric cards, SVG charts, typed fixture
+scenarios, and navigation placeholders for later screens. The scenario selector
+exercises single and multiple batteries, charging, incomplete telemetry, stale
+suspend data, and no-battery states without accessing hardware.
+
+There is still no live battery reader, database, recorder, desktop window,
+export, or Omarchy plugin. The simulation is deliberately visible in the UI
+and does not read or store battery data. Phase 3 will place this UI in a Tauri
+desktop window while retaining the fixtures.
 
 The product will be built incrementally: simulated UI first, then Tauri,
 real battery data, persistent recording, history, health, and export. The

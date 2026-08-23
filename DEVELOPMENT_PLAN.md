@@ -7,9 +7,9 @@ It captures the agreed product scope, architecture, portability strategy,
 development phases, quality gates, privacy constraints, and known hardware
 limitations.
 
-No application code is part of this planning milestone. Implementation must
-proceed phase by phase. Advanced features must not be implemented before the
-core version is stable.
+Phases 1 and 2 are complete: the repository foundation and a simulated Svelte
+dashboard are implemented. Implementation continues phase by phase. Advanced
+features must not be implemented before the core version is stable.
 
 ## 2. Product vision
 
@@ -635,7 +635,7 @@ historical data after confirmation.
 
 ## 23. Development phases
 
-### Phase 1 — Project structure and initial documentation
+### Phase 1 — Project structure and initial documentation — Complete
 
 Deliverables:
 
@@ -654,7 +654,7 @@ Exit tests:
 - frontend format/lint/build;
 - minimal Rust format/build/test.
 
-### Phase 2 — Svelte interface with simulated data
+### Phase 2 — Svelte interface with simulated data — Complete
 
 Deliverables:
 
