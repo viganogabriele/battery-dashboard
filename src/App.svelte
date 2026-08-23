@@ -170,6 +170,7 @@
       );
       const dashboard = await client.getDashboard();
 
+      isNativeRuntime = true;
       liveDashboard = dashboard;
       liveDataError = null;
       const suggestedBatteryId =
@@ -185,12 +186,12 @@
         : suggestedBatteryId;
       await refreshRecentHistory(selectedBatteryId);
       await refreshSessionHistory(selectedBatteryId);
-    } catch {
+    } catch (error) {
       // Native failures must stay visible: fixtures belong only to browser preview.
       liveDashboard = null;
       recentHistory = null;
       sessionHistory = null;
-      liveDataError = 'Could not read local battery data from UPower or sysfs.';
+      liveDataError = `Could not read local battery data: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
       isRefreshingLiveData = false;
     }
@@ -215,7 +216,6 @@
 
   onMount(() => {
     isNativeRuntime = '__TAURI_INTERNALS__' in window;
-    if (!isNativeRuntime) return;
     void refreshLiveData();
     const refreshInterval = window.setInterval(() => void refreshLiveData(), 15_000);
 
