@@ -16,8 +16,8 @@
         "title": "Battery Dashboard",
         "width": 1280,
         "height": 820,
-        "minWidth": 960,
-        "minHeight": 640,
+        "minWidth": 640,
+        "minHeight": 520,
         "resizable": true,
         "fullscreen": false,
         "decorations": true

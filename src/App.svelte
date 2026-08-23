@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { SvelteDate } from 'svelte/reactivity';
 
   import BatterySelector from './lib/components/BatterySelector.svelte';
   import BatteryStateBadge from './lib/components/BatteryStateBadge.svelte';
@@ -117,6 +118,38 @@
     selectedBatteryId = id;
     if (isLiveData) void refreshRecentHistory(id);
     if (isLiveData) void refreshSessionHistory(id);
+  }
+
+  function selectSection(section: ProductSection) {
+    activeSection = section;
+    if (isLiveData && (section === 'sessions' || section === 'history')) {
+      void refreshSessionHistory();
+    }
+  }
+
+  function localDate(offsetDays = 0): string {
+    const date = new SvelteDate();
+    date.setDate(date.getDate() + offsetDays);
+    return [
+      date.getFullYear(),
+      String(date.getMonth() + 1).padStart(2, '0'),
+      String(date.getDate()).padStart(2, '0'),
+    ].join('-');
+  }
+
+  function showSessionDay(offsetDays: number) {
+    const date = localDate(offsetDays);
+    sessionStartDate = date;
+    sessionEndDate = date;
+    void refreshSessionHistory();
+  }
+
+  function showHistoryDay(offsetDays: number) {
+    const date = localDate(offsetDays);
+    sessionStartDate = date;
+    sessionEndDate = date;
+    activeSection = 'history';
+    void refreshSessionHistory();
   }
 
   function timezone(): string {
@@ -283,10 +316,7 @@
       </p>
     </div>
 
-    <SectionNavigation
-      selectedSection={activeSection}
-      onSelect={(section) => (activeSection = section)}
-    />
+    <SectionNavigation selectedSection={activeSection} onSelect={selectSection} />
 
     <p class="sidebar__note">
       {isLiveData
@@ -299,7 +329,8 @@
     <header class="page-header">
       <div>
         <p class="eyebrow">{selectedSectionInfo.label}</p>
-        <h1 id="page-title">{selectedSectionInfo.description}</h1>
+        <h1 id="page-title">{selectedSectionInfo.label}</h1>
+        <p class="page-header__description">{selectedSectionInfo.description}</p>
       </div>
       <span class="preview-badge">{isLiveData ? 'Live data' : 'Unavailable'}</span>
     </header>
@@ -356,6 +387,37 @@
           </aside>
         {/if}
 
+        {#if isLiveData}
+          <RecentHistoryChart
+            points={recentHistoryPoints}
+            gaps={recentHistoryGaps}
+            summary={recentHistorySummary}
+            loading={isRefreshingHistory}
+            recorderState={recentHistoryRecorderState}
+            selectedRange={historyRange}
+            onRangeChange={selectHistoryRange}
+          />
+        {/if}
+
+        <section class="dashboard-actions" aria-label="Battery records">
+          <button type="button" onclick={() => selectSection('sessions')}>
+            <strong>Sessions</strong>
+            <span>Charging and on-battery time, with incomplete runs kept visible.</span
+            >
+          </button>
+          <button type="button" onclick={() => selectSection('history')}>
+            <strong>History</strong>
+            <span
+              >Daily, weekly, and monthly local summaries — including today and
+              yesterday.</span
+            >
+          </button>
+          <button type="button" onclick={() => selectSection('settings')}>
+            <strong>Recording</strong>
+            <span>Enable the local timer once to start collecting future history.</span>
+          </button>
+        </section>
+
         <section class="metric-grid" aria-label="Battery metrics">
           <MetricCard
             label="Battery power"
@@ -398,18 +460,6 @@
             unavailableLabel="Not exposed"
           />
         </section>
-
-        {#if isLiveData}
-          <RecentHistoryChart
-            points={recentHistoryPoints}
-            gaps={recentHistoryGaps}
-            summary={recentHistorySummary}
-            loading={isRefreshingHistory}
-            recorderState={recentHistoryRecorderState}
-            selectedRange={historyRange}
-            onRangeChange={selectHistoryRange}
-          />
-        {/if}
       {:else}
         <EmptyState
           title={isNativeRuntime
@@ -425,10 +475,21 @@
       {/if}
     {:else if activeSection === 'sessions'}
       <div class="session-actions">
+        <div class="session-actions__presets" aria-label="Session date shortcuts">
+          <button type="button" onclick={() => showSessionDay(0)}>Today</button>
+          <button type="button" onclick={() => showSessionDay(-1)}>Yesterday</button>
+          <button
+            type="button"
+            onclick={() => {
+              sessionStartDate = '';
+              sessionEndDate = '';
+              void refreshSessionHistory();
+            }}>All recorded</button
+          >
+        </div>
         <button type="button" onclick={rebuildSessions} disabled={isRebuildingSessions}>
-          {isRebuildingSessions ? 'Rebuilding sessions…' : 'Rebuild local sessions'}
+          {isRebuildingSessions ? 'Rebuilding sessions…' : 'Rebuild sessions'}
         </button>
-        <p>Rebuild uses immutable local samples and does not collect new data.</p>
       </div>
       <SessionsView
         sessions={(sessionHistory?.sessions ?? []).map((session) => ({
@@ -474,16 +535,29 @@
         }}
       />
     {:else if activeSection === 'history'}
+      <div class="session-actions">
+        <div class="session-actions__presets" aria-label="History date shortcuts">
+          <button type="button" onclick={() => showHistoryDay(0)}>Today</button>
+          <button type="button" onclick={() => showHistoryDay(-1)}>Yesterday</button>
+          <button
+            type="button"
+            onclick={() => {
+              sessionStartDate = '';
+              sessionEndDate = '';
+              void refreshSessionHistory();
+            }}>All recorded</button
+          >
+        </div>
+      </div>
       <CalendarHistoryView
         periods={(sessionHistory?.[calendarPeriod] ?? []).map((item) => ({
           id: `${item.bucket}-${item.batteryId ?? 'all'}`,
           label: item.bucket,
-          coveragePercent:
-            item.coverageRatio === null ? null : item.coverageRatio * 100,
+          observedSamples: item.observedSamples,
           minimumPercentage: item.minimumPercentage,
           maximumPercentage: item.maximumPercentage,
           observedEnergyWh: item.observedEnergyUsedWh ?? item.observedEnergyChargedWh,
-          averagePowerWatts: null,
+          recordedDurationSeconds: item.coverageSeconds,
         }))}
         batteries={batteryOptions.filter((battery) => battery.id !== 'all-batteries')}
         selectedAggregation={calendarPeriod}

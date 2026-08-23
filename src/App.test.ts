@@ -37,4 +37,25 @@ describe('App', () => {
     expect(screen.getByText('Not supported on this system')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Enable recording/ })).toBeNull();
   });
+
+  it('offers today and yesterday shortcuts for recorded sessions and calendar history', async () => {
+    render(App);
+    const today = new Date();
+    const todayIso = [
+      today.getFullYear(),
+      String(today.getMonth() + 1).padStart(2, '0'),
+      String(today.getDate()).padStart(2, '0'),
+    ].join('-');
+
+    await fireEvent.click(screen.getByRole('button', { name: /^Sessions:/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Today' }));
+    expect((screen.getByLabelText('From') as HTMLInputElement).value).toBe(todayIso);
+    expect((screen.getByLabelText('To') as HTMLInputElement).value).toBe(todayIso);
+
+    await fireEvent.click(screen.getByRole('button', { name: /^History:/ }));
+    await fireEvent.click(screen.getByRole('button', { name: 'Yesterday' }));
+    expect((screen.getByLabelText('From') as HTMLInputElement).value).not.toBe(
+      todayIso,
+    );
+  });
 });

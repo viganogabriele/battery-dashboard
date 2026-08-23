@@ -213,17 +213,32 @@ describe('battery dashboard presentation components', () => {
         {
           id: '2026-01-01',
           label: '1 Jan 2026',
-          coveragePercent: null,
+          observedSamples: null,
           observedEnergyWh: null,
         },
       ],
       onAggregationChange,
     });
 
-    expect(screen.getByText('Unavailable')).toBeTruthy();
-    expect(screen.getAllByText('—')).toHaveLength(4);
+    expect(screen.getAllByText('—')).toHaveLength(5);
     await fireEvent.click(screen.getByRole('button', { name: 'weekly' }));
     expect(onAggregationChange).toHaveBeenCalledWith('weekly');
+  });
+
+  it('labels explicitly recorded calendar duration without estimating it', () => {
+    render(CalendarHistoryView, {
+      periods: [
+        {
+          id: '2026-01-01',
+          label: '1 Jan 2026',
+          observedSamples: null,
+          recordedDurationSeconds: 5_400,
+        },
+      ],
+    });
+
+    expect(screen.getByText('Recorded time')).toBeTruthy();
+    expect(screen.getByText('1h 30m')).toBeTruthy();
   });
 
   it('states when session and calendar history are unavailable', () => {

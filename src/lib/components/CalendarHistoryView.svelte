@@ -6,11 +6,11 @@
   export type CalendarHistoryPeriod = {
     id: string;
     label: string;
-    coveragePercent: number | null;
+    observedSamples?: number | null;
     minimumPercentage?: number | null;
     maximumPercentage?: number | null;
     observedEnergyWh?: number | null;
-    averagePowerWatts?: number | null;
+    recordedDurationSeconds?: number | null;
   };
 
   type Props = {
@@ -61,6 +61,11 @@
     value === 'all' ? 'All states' : value[0].toUpperCase() + value.slice(1);
   const provided = (value: number | null | undefined): value is number =>
     value !== null && value !== undefined && Number.isFinite(value);
+  const formatDuration = (seconds: number) => {
+    const minutes = Math.round(seconds / 60);
+    const hours = Math.floor(minutes / 60);
+    return hours > 0 ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+  };
 </script>
 
 <section class="calendar-history" aria-labelledby={`${id}-title`}>
@@ -69,8 +74,8 @@
       <p class="calendar-history__eyebrow">Calendar history</p>
       <h2 id={`${id}-title`}>Recorded battery history</h2>
       <p class="calendar-history__description">
-        Coverage is shown for every period so partial collection is not mistaken for a
-        complete record.
+        Each value is derived only from stored local samples. Missing collection stays
+        visible instead of being estimated.
       </p>
     </div>
     <div class="calendar-history__ranges" aria-label="Aggregation period">
@@ -129,18 +134,16 @@
       <table>
         <caption>Calendar history by {selectedAggregation} period</caption><thead
           ><tr
-            ><th scope="col">Period</th><th scope="col">Coverage</th><th scope="col"
+            ><th scope="col">Period</th><th scope="col">Samples</th><th scope="col"
               >Minimum</th
-            ><th scope="col">Maximum</th><th scope="col">Observed energy</th><th
-              scope="col">Average power</th
+            ><th scope="col">Maximum</th><th scope="col">Recorded time</th><th
+              scope="col">Observed energy</th
             ></tr
           ></thead
         ><tbody
           >{#each periods as period (period.id)}<tr
               ><th scope="row">{period.label}</th><td
-                >{provided(period.coveragePercent)
-                  ? `${period.coveragePercent.toFixed(0)}%`
-                  : 'Unavailable'}</td
+                >{provided(period.observedSamples) ? period.observedSamples : '—'}</td
               ><td
                 >{provided(period.minimumPercentage)
                   ? `${period.minimumPercentage.toFixed(0)}%`
@@ -150,12 +153,12 @@
                   ? `${period.maximumPercentage.toFixed(0)}%`
                   : '—'}</td
               ><td
-                >{provided(period.observedEnergyWh)
-                  ? `${period.observedEnergyWh.toFixed(1)} Wh`
+                >{provided(period.recordedDurationSeconds)
+                  ? formatDuration(period.recordedDurationSeconds)
                   : '—'}</td
               ><td
-                >{provided(period.averagePowerWatts)
-                  ? `${period.averagePowerWatts.toFixed(1)} W`
+                >{provided(period.observedEnergyWh)
+                  ? `${period.observedEnergyWh.toFixed(1)} Wh`
                   : '—'}</td
               ></tr
             >{/each}</tbody
