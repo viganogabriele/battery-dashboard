@@ -4,35 +4,13 @@ import { describe, expect, it } from 'vitest';
 import App from './App.svelte';
 
 describe('App', () => {
-  it('renders the simulated dashboard without claiming live collection', () => {
+  it('refuses to show fixture readings in the browser', () => {
     render(App);
 
     expect(screen.getByText('Battery Dashboard')).toBeTruthy();
-    expect(
-      screen.getByRole('heading', {
-        level: 1,
-        name: 'Current battery status and recent activity.',
-      }),
-    ).toBeTruthy();
-    expect(
-      screen.getByText('Simulated data', { selector: '.preview-badge' }),
-    ).toBeTruthy();
-    expect(
-      screen.getByRole('heading', { name: 'Simulated battery data' }),
-    ).toBeTruthy();
-    expect(screen.getByText(/No battery data is read or stored/)).toBeTruthy();
-    expect(screen.getByRole('meter', { name: 'Battery charge: 63%' })).toBeTruthy();
-  });
-
-  it('shows the explicit no-battery state for the matching scenario', async () => {
-    render(App);
-
-    await fireEvent.change(screen.getByLabelText('Simulation scenario'), {
-      target: { value: 'no-battery' },
-    });
-
-    expect(screen.getByRole('heading', { name: 'No battery detected' })).toBeTruthy();
-    expect(screen.queryByLabelText('Battery metrics')).toBeNull();
+    expect(screen.getByText('Desktop app required')).toBeTruthy();
+    expect(screen.getByText('Open the desktop application')).toBeTruthy();
+    expect(screen.queryByRole('meter')).toBeNull();
   });
 
   it('renders calendar history with an explicit empty recorded state', async () => {

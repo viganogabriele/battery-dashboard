@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
 
-  import TimeSeriesChart from './lib/charts/TimeSeriesChart.svelte';
   import BatterySelector from './lib/components/BatterySelector.svelte';
   import BatteryStateBadge from './lib/components/BatteryStateBadge.svelte';
   import EmptyState from './lib/components/EmptyState.svelte';
@@ -14,10 +13,6 @@
   import SessionsView from './lib/components/SessionsView.svelte';
   import CalendarHistoryView from './lib/components/CalendarHistoryView.svelte';
   import { isMetricAvailable, type Metric } from './lib/domain/battery';
-  import {
-    dashboardScenarioCatalog,
-    findDashboardScenario,
-  } from './lib/fixtures/dashboard-scenarios';
   import SectionNavigation from './lib/navigation/SectionNavigation.svelte';
   import {
     defaultProductSection,
@@ -41,19 +36,8 @@
     type BatterySessionHistoryData,
   } from './lib/services/session-history-client';
 
-  const defaultScenario =
-    findDashboardScenario(dashboardScenarioCatalog.defaultScenarioId) ??
-    dashboardScenarioCatalog.scenarios[0];
-
-  if (!defaultScenario) {
-    throw new Error('The simulated dashboard requires at least one scenario.');
-  }
-
   let activeSection = $state<ProductSection>(defaultProductSection);
-  let selectedScenarioId = $state(defaultScenario.id);
-  let selectedBatteryId = $state(
-    defaultScenario.selectedSnapshot?.id ?? 'all-batteries',
-  );
+  let selectedBatteryId = $state('all-batteries');
   let liveDashboard = $state<BatteryDashboardData | null>(null);
   let isNativeRuntime = $state(false);
   let liveDataError = $state<string | null>(null);
@@ -74,14 +58,8 @@
   let sessionStartDate = $state('');
   let sessionEndDate = $state('');
 
-  let scenario = $derived(findDashboardScenario(selectedScenarioId) ?? defaultScenario);
-  let isSimulatedPreview = $derived(!isNativeRuntime);
-  let batteries = $derived(
-    isSimulatedPreview ? scenario.batteries : (liveDashboard?.batteries ?? []),
-  );
-  let aggregate = $derived(
-    isSimulatedPreview ? scenario.aggregate : (liveDashboard?.aggregate ?? null),
-  );
+  let batteries = $derived(liveDashboard?.batteries ?? []);
+  let aggregate = $derived(liveDashboard?.aggregate ?? null);
   let isLiveData = $derived(liveDashboard !== null);
   let selectedSnapshot = $derived.by(() => {
     if (batteries.length === 0) return null;
@@ -101,18 +79,6 @@
   let selectedSectionInfo = $derived(
     productSections.find((section) => section.id === activeSection) ??
       productSections[0],
-  );
-  let powerPoints = $derived(
-    scenario.chart.map((point) => ({
-      timestamp: point.timestamp,
-      value: point.powerWatts,
-    })),
-  );
-  let percentagePoints = $derived(
-    scenario.chart.map((point) => ({
-      timestamp: point.timestamp,
-      value: point.percentage,
-    })),
   );
   let recentHistoryPoints = $derived(
     recentHistory?.points.map((point) => ({
@@ -147,18 +113,6 @@
     if (recentHistory?.unavailableReason === 'database-unavailable') return 'error';
     return 'enabled';
   });
-
-  function selectScenario(id: string) {
-    const nextScenario = findDashboardScenario(id);
-    if (!nextScenario) return;
-
-    selectedScenarioId = id;
-    selectedBatteryId =
-      nextScenario.batteries.length > 1
-        ? 'all-batteries'
-        : (nextScenario.batteries[0]?.id ?? 'all-batteries');
-    activeSection = 'dashboard';
-  }
 
   function selectBattery(id: string) {
     selectedBatteryId = id;
@@ -314,21 +268,11 @@
   function isStale(metric: Metric<number>): boolean {
     return metric.availability === 'stale';
   }
-
-  const formatPower = (value: number) => `${formatNumber(value, 1, true)} W`;
-  const formatPercentage = (value: number) => `${formatNumber(value, 0)}%`;
 </script>
 
 <svelte:head>
-  <title
-    >{isSimulatedPreview
-      ? 'Battery Dashboard — Simulated preview'
-      : 'Battery Dashboard'}</title
-  >
-  <meta
-    name="description"
-    content="A simulated preview of the local-first Battery Dashboard interface."
-  />
+  <title>Battery Dashboard</title>
+  <meta name="description" content="A local-first Linux battery dashboard." />
 </svelte:head>
 
 <main class="dashboard-app">
@@ -337,7 +281,7 @@
       <p class="eyebrow">Local-first Linux utility</p>
       <p class="brand__name">Battery Dashboard</p>
       <p class="brand__detail">
-        {isSimulatedPreview ? 'Browser simulated preview' : 'Native local dashboard'}
+        {isNativeRuntime ? 'Native local dashboard' : 'Desktop app required'}
       </p>
     </div>
 
@@ -346,26 +290,10 @@
       onSelect={(section) => (activeSection = section)}
     />
 
-    {#if isSimulatedPreview}
-      <label class="scenario-control">
-        <span>Simulation scenario</span>
-        <select
-          value={selectedScenarioId}
-          onchange={(event) => selectScenario(event.currentTarget.value)}
-        >
-          {#each dashboardScenarioCatalog.scenarios as option (option.id)}
-            <option value={option.id}>{option.name}</option>
-          {/each}
-        </select>
-      </label>
-    {/if}
-
     <p class="sidebar__note">
       {isLiveData
         ? 'Live data and recorder controls stay local to this device.'
-        : isSimulatedPreview
-          ? 'These values are fixtures only. No battery data is read or stored in this browser preview.'
-          : 'Local battery data is unavailable; no simulated replacement is shown.'}
+        : 'This dashboard never substitutes simulated readings for local battery data.'}
     </p>
   </aside>
 
@@ -375,18 +303,12 @@
         <p class="eyebrow">{selectedSectionInfo.label}</p>
         <h1 id="page-title">{selectedSectionInfo.description}</h1>
       </div>
-      <span class="preview-badge"
-        >{isLiveData
-          ? 'Live data'
-          : isSimulatedPreview
-            ? 'Simulated data'
-            : 'Unavailable'}</span
-      >
+      <span class="preview-badge">{isLiveData ? 'Live data' : 'Unavailable'}</span>
     </header>
 
-    <ExecutionContextNotice
-      executionContext={isSimulatedPreview ? 'simulated-preview' : 'native-desktop'}
-    />
+    {#if isNativeRuntime}<ExecutionContextNotice
+        executionContext="native-desktop"
+      />{/if}
 
     {#if activeSection === 'dashboard'}
       {#if selectedSnapshot}
@@ -423,7 +345,7 @@
             <p>
               {isLiveData
                 ? 'Read locally from available Linux battery providers. Each metric names its source.'
-                : scenario.description}
+                : 'Local battery data is shown only when a provider reports it.'}
             </p>
           </div>
         </section>
@@ -431,7 +353,7 @@
         {#if selectedSnapshot.percentage.availability === 'stale'}
           <aside class="data-notice" aria-label="Stale sample warning">
             <strong>Last sample may be outdated.</strong>
-            This scenario represents a suspend gap; the chart keeps the missing interval visible.
+            The provider marked this battery reading as stale; history keeps gaps visible.
           </aside>
         {/if}
 
@@ -488,37 +410,18 @@
             selectedRange={historyRange}
             onRangeChange={selectHistoryRange}
           />
-        {:else}
-          <section class="chart-grid" aria-label="Simulated charts">
-            <TimeSeriesChart
-              id="power-chart"
-              title="Battery power"
-              description="Simulated charging and discharging observations from the last seven hours."
-              points={powerPoints}
-              formatValue={formatPower}
-              color="var(--color-power)"
-            />
-            <TimeSeriesChart
-              id="charge-chart"
-              title="Charge level"
-              description="A fixture preview of how a persisted charge trend will be displayed."
-              points={percentagePoints}
-              formatValue={formatPercentage}
-              color="var(--color-accent)"
-            />
-          </section>
         {/if}
-      {:else if isSimulatedPreview}
-        <EmptyState
-          title="No battery detected"
-          message="This simulated scenario represents a desktop system or unsupported hardware."
-          hint="The real application will show this state instead of inventing measurements."
-        />
       {:else}
         <EmptyState
-          title="Local battery data unavailable"
-          message={liveDataError ?? 'Waiting for local battery providers.'}
-          hint="Check that UPower is running and that Linux exposes a battery under /sys/class/power_supply."
+          title={isNativeRuntime
+            ? 'Local battery data unavailable'
+            : 'Open the desktop application'}
+          message={isNativeRuntime
+            ? (liveDataError ?? 'Waiting for local battery providers.')
+            : 'This browser page cannot access UPower, sysfs, or your local SQLite history.'}
+          hint={isNativeRuntime
+            ? 'Check that UPower is running and that Linux exposes a battery under /sys/class/power_supply.'
+            : 'Run pnpm tauri dev from the project directory to see real local readings.'}
         />
       {/if}
     {:else if activeSection === 'sessions'}
