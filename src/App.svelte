@@ -55,6 +55,8 @@
     defaultScenario.selectedSnapshot?.id ?? 'all-batteries',
   );
   let liveDashboard = $state<BatteryDashboardData | null>(null);
+  let isNativeRuntime = $state(false);
+  let liveDataError = $state<string | null>(null);
   let isRefreshingLiveData = $state(false);
   let recentHistory = $state<RecentBatteryHistoryData | null>(null);
   let isRefreshingHistory = $state(false);
@@ -73,8 +75,13 @@
   let sessionEndDate = $state('');
 
   let scenario = $derived(findDashboardScenario(selectedScenarioId) ?? defaultScenario);
-  let batteries = $derived(liveDashboard?.batteries ?? scenario.batteries);
-  let aggregate = $derived(liveDashboard?.aggregate ?? scenario.aggregate);
+  let isSimulatedPreview = $derived(!isNativeRuntime);
+  let batteries = $derived(
+    isSimulatedPreview ? scenario.batteries : (liveDashboard?.batteries ?? []),
+  );
+  let aggregate = $derived(
+    isSimulatedPreview ? scenario.aggregate : (liveDashboard?.aggregate ?? null),
+  );
   let isLiveData = $derived(liveDashboard !== null);
   let selectedSnapshot = $derived.by(() => {
     if (batteries.length === 0) return null;
@@ -83,7 +90,9 @@
     return batteries.find((battery) => battery.id === selectedBatteryId) ?? null;
   });
   let batteryOptions = $derived.by(() => [
-    ...(batteries.length > 1 ? [{ id: 'all-batteries', label: aggregate.label }] : []),
+    ...(batteries.length > 1 && aggregate
+      ? [{ id: 'all-batteries', label: aggregate.label }]
+      : []),
     ...batteries.map((battery) => ({
       id: battery.id,
       label: `${battery.label} (${battery.id})`,
@@ -208,6 +217,7 @@
       const dashboard = await client.getDashboard();
 
       liveDashboard = dashboard;
+      liveDataError = null;
       const suggestedBatteryId =
         dashboard.batteries.length > 1
           ? 'all-batteries'
@@ -222,10 +232,11 @@
       await refreshRecentHistory(selectedBatteryId);
       await refreshSessionHistory(selectedBatteryId);
     } catch {
-      // The browser preview deliberately keeps its fixtures when Tauri is absent.
+      // Native failures must stay visible: fixtures belong only to browser preview.
       liveDashboard = null;
       recentHistory = null;
       sessionHistory = null;
+      liveDataError = 'Could not read local battery data from UPower or sysfs.';
     } finally {
       isRefreshingLiveData = false;
     }
@@ -249,6 +260,8 @@
   }
 
   onMount(() => {
+    isNativeRuntime = '__TAURI_INTERNALS__' in window;
+    if (!isNativeRuntime) return;
     void refreshLiveData();
     const refreshInterval = window.setInterval(() => void refreshLiveData(), 15_000);
 
@@ -308,7 +321,9 @@
 
 <svelte:head>
   <title
-    >{isLiveData ? 'Battery Dashboard' : 'Battery Dashboard — Simulated preview'}</title
+    >{isSimulatedPreview
+      ? 'Battery Dashboard — Simulated preview'
+      : 'Battery Dashboard'}</title
   >
   <meta
     name="description"
@@ -322,7 +337,7 @@
       <p class="eyebrow">Local-first Linux utility</p>
       <p class="brand__name">Battery Dashboard</p>
       <p class="brand__detail">
-        {isLiveData ? 'Native local dashboard' : 'Browser simulated preview'}
+        {isSimulatedPreview ? 'Browser simulated preview' : 'Native local dashboard'}
       </p>
     </div>
 
@@ -331,7 +346,7 @@
       onSelect={(section) => (activeSection = section)}
     />
 
-    {#if !isLiveData}
+    {#if isSimulatedPreview}
       <label class="scenario-control">
         <span>Simulation scenario</span>
         <select
@@ -348,7 +363,9 @@
     <p class="sidebar__note">
       {isLiveData
         ? 'Live data and recorder controls stay local to this device.'
-        : 'These values are fixtures only. No battery data is read or stored in this browser preview.'}
+        : isSimulatedPreview
+          ? 'These values are fixtures only. No battery data is read or stored in this browser preview.'
+          : 'Local battery data is unavailable; no simulated replacement is shown.'}
     </p>
   </aside>
 
@@ -358,11 +375,17 @@
         <p class="eyebrow">{selectedSectionInfo.label}</p>
         <h1 id="page-title">{selectedSectionInfo.description}</h1>
       </div>
-      <span class="preview-badge">{isLiveData ? 'Live data' : 'Simulated data'}</span>
+      <span class="preview-badge"
+        >{isLiveData
+          ? 'Live data'
+          : isSimulatedPreview
+            ? 'Simulated data'
+            : 'Unavailable'}</span
+      >
     </header>
 
     <ExecutionContextNotice
-      executionContext={isLiveData ? 'native-desktop' : 'simulated-preview'}
+      executionContext={isSimulatedPreview ? 'simulated-preview' : 'native-desktop'}
     />
 
     {#if activeSection === 'dashboard'}
@@ -485,11 +508,17 @@
             />
           </section>
         {/if}
-      {:else}
+      {:else if isSimulatedPreview}
         <EmptyState
           title="No battery detected"
           message="This simulated scenario represents a desktop system or unsupported hardware."
           hint="The real application will show this state instead of inventing measurements."
+        />
+      {:else}
+        <EmptyState
+          title="Local battery data unavailable"
+          message={liveDataError ?? 'Waiting for local battery providers.'}
+          hint="Check that UPower is running and that Linux exposes a battery under /sys/class/power_supply."
         />
       {/if}
     {:else if activeSection === 'sessions'}
