@@ -1,0 +1,20 @@
+# Frontend dependencies and build output
+node_modules/
+dist/
+.svelte-kit/
+coverage/
+
+# Rust build output
+target/
+
+# Tauri-generated files
+src-tauri/gen/
+
+# Local environment and tooling files
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+.idea/
+.vscode/

@@ -157,6 +157,8 @@ an in-memory short chart, but it must not silently persist samples.
 
 ```text
 battery-dashboard/
+├── crates/
+│   └── battery-core/            # Shared platform-neutral domain types
 ├── src/
 │   ├── lib/
 │   │   ├── components/
