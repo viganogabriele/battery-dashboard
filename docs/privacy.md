@@ -43,7 +43,8 @@ and share them deliberately.
 
 ## Current status
 
-These are design commitments for planned functionality. During Phase 3, the
-Tauri desktop shell continues to display only bundled simulated fixtures. It
-does not create a database, collect battery measurements, install a timer,
-export data, start a network service, or send data off the device.
+During Phase 4, the Tauri command reads current UPower and sysfs values only
+when the desktop window requests them. It does not create a database, install a
+timer, export data, start a network service, or send data off the device.
+There is no background collection while the window is closed; that is an
+opt-in feature reserved for the later recorder phase.

@@ -14,10 +14,16 @@ tested.
 
 ## Current implementation limit
 
-Phase 3 is adding the native Tauri window, not a hardware provider. The
-current dashboard values remain deterministic simulated fixtures. It does not
-yet inspect UPower, D-Bus, `/sys/class/power_supply`, or any real battery, so
-it cannot establish hardware compatibility on the machine where it runs.
+Phase 4 reads current physical laptop batteries from UPower and
+`/sys/class/power_supply`. It excludes UPower's aggregate display device and
+non-power-supply peripherals, and it discovers sysfs entries by `type=Battery`.
+The UI is therefore useful with BAT0, BAT1, or differently named packs, but it
+does not yet keep a history, infer unsupported fields, or establish universal
+hardware compatibility from one machine.
+
+An unavailable field remains unavailable. In particular, charge values in Ah
+are not presented as energy values in Wh unless a later phase has a valid,
+explicit conversion rule.
 
 ## Expected sources
 

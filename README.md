@@ -14,7 +14,7 @@ interfaces are supported, but they are not yet official targets.
 
 ## Current status
 
-Phases 1–3 are complete. The repository includes the Tauri 2 desktop shell,
+Phases 1–4 are complete. The repository includes the Tauri 2 desktop shell,
 the Svelte/Vite/Tailwind scaffold, a small platform-neutral Rust domain crate, a
 responsive dashboard, metric cards, SVG charts, typed fixture scenarios, and
 navigation placeholders for later screens. The scenario selector exercises
@@ -22,9 +22,10 @@ single and multiple batteries, charging, incomplete telemetry, stale suspend
 data, and no-battery states without accessing hardware.
 
 The Tauri desktop shell has one normal window, no tray or top-bar icon, and no
-production HTTP server. There is still no live battery reader, database,
-recorder, export, or Omarchy plugin. The simulated data is deliberately visible
-in the UI and does not read or store battery data.
+production HTTP server. It reads current battery data locally from UPower and
+Linux sysfs, falls back per field when either source is incomplete, and shows
+the origin of each metric. There is still no database, recorder, export, or
+Omarchy plugin. The browser preview keeps its simulated data explicitly marked.
 
 The product will be built incrementally: simulated UI first, then Tauri,
 real battery data, persistent recording, history, health, and export. The

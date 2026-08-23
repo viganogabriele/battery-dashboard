@@ -10,7 +10,10 @@ publish = false
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }
 tauri = { version = "2", features = [] }
+time = { version = "0.3", features = ["formatting"] }
+zbus = { version = "5", default-features = false, features = ["tokio"] }
 
 [lints.rust]
 unsafe_code = "forbid"

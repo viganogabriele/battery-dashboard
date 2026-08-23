@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   import TimeSeriesChart from './lib/charts/TimeSeriesChart.svelte';
   import BatterySelector from './lib/components/BatterySelector.svelte';
   import BatteryStateBadge from './lib/components/BatteryStateBadge.svelte';
@@ -16,6 +18,11 @@
     productSections,
     type ProductSection,
   } from './lib/navigation/sections';
+  import {
+    createBatteryDashboardClient,
+    type BatteryDashboardData,
+    type BatteryDashboardResponseDto,
+  } from './lib/services/battery-dashboard-client';
 
   const defaultScenario =
     findDashboardScenario(dashboardScenarioCatalog.defaultScenarioId) ??
@@ -30,21 +37,22 @@
   let selectedBatteryId = $state(
     defaultScenario.selectedSnapshot?.id ?? 'all-batteries',
   );
+  let liveDashboard = $state<BatteryDashboardData | null>(null);
+  let isRefreshingLiveData = $state(false);
 
   let scenario = $derived(findDashboardScenario(selectedScenarioId) ?? defaultScenario);
+  let batteries = $derived(liveDashboard?.batteries ?? scenario.batteries);
+  let aggregate = $derived(liveDashboard?.aggregate ?? scenario.aggregate);
+  let isLiveData = $derived(liveDashboard !== null);
   let selectedSnapshot = $derived.by(() => {
-    if (scenario.batteries.length === 0) return null;
-    if (selectedBatteryId === 'all-batteries') return scenario.aggregate;
+    if (batteries.length === 0) return null;
+    if (selectedBatteryId === 'all-batteries') return aggregate;
 
-    return (
-      scenario.batteries.find((battery) => battery.id === selectedBatteryId) ?? null
-    );
+    return batteries.find((battery) => battery.id === selectedBatteryId) ?? null;
   });
   let batteryOptions = $derived.by(() => [
-    ...(scenario.batteries.length > 1
-      ? [{ id: 'all-batteries', label: scenario.aggregate.label }]
-      : []),
-    ...scenario.batteries.map((battery) => ({
+    ...(batteries.length > 1 ? [{ id: 'all-batteries', label: aggregate.label }] : []),
+    ...batteries.map((battery) => ({
       id: battery.id,
       label: `${battery.label} (${battery.id})`,
     })),
@@ -77,6 +85,37 @@
         : (nextScenario.batteries[0]?.id ?? 'all-batteries');
     activeSection = 'dashboard';
   }
+
+  async function refreshLiveData() {
+    if (isRefreshingLiveData) return;
+
+    isRefreshingLiveData = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      const client = createBatteryDashboardClient(() =>
+        invoke<BatteryDashboardResponseDto>('get_battery_dashboard'),
+      );
+      const dashboard = await client.getDashboard();
+
+      liveDashboard = dashboard;
+      selectedBatteryId =
+        dashboard.batteries.length > 1
+          ? 'all-batteries'
+          : (dashboard.batteries[0]?.id ?? 'all-batteries');
+    } catch {
+      // The browser preview deliberately keeps its fixtures when Tauri is absent.
+      liveDashboard = null;
+    } finally {
+      isRefreshingLiveData = false;
+    }
+  }
+
+  onMount(() => {
+    void refreshLiveData();
+    const refreshInterval = window.setInterval(() => void refreshLiveData(), 15_000);
+
+    return () => window.clearInterval(refreshInterval);
+  });
 
   function formatNumber(value: number, digits = 1, sign = false): string {
     return new Intl.NumberFormat(undefined, {
@@ -144,20 +183,24 @@
       onSelect={(section) => (activeSection = section)}
     />
 
-    <label class="scenario-control">
-      <span>Simulation scenario</span>
-      <select
-        value={selectedScenarioId}
-        onchange={(event) => selectScenario(event.currentTarget.value)}
-      >
-        {#each dashboardScenarioCatalog.scenarios as option (option.id)}
-          <option value={option.id}>{option.name}</option>
-        {/each}
-      </select>
-    </label>
+    {#if !isLiveData}
+      <label class="scenario-control">
+        <span>Simulation scenario</span>
+        <select
+          value={selectedScenarioId}
+          onchange={(event) => selectScenario(event.currentTarget.value)}
+        >
+          {#each dashboardScenarioCatalog.scenarios as option (option.id)}
+            <option value={option.id}>{option.name}</option>
+          {/each}
+        </select>
+      </label>
+    {/if}
 
     <p class="sidebar__note">
-      These values are fixtures only. No battery data is read or stored in this phase.
+      {isLiveData
+        ? 'Live data is read locally. Recording and storage are not implemented in this phase.'
+        : 'These values are fixtures only. No battery data is read or stored in this phase.'}
     </p>
   </aside>
 
@@ -167,10 +210,12 @@
         <p class="eyebrow">{selectedSectionInfo.label}</p>
         <h1 id="page-title">{selectedSectionInfo.description}</h1>
       </div>
-      <span class="preview-badge">Simulated data</span>
+      <span class="preview-badge">{isLiveData ? 'Live data' : 'Simulated data'}</span>
     </header>
 
-    <ExecutionContextNotice executionContext="simulated-preview" />
+    <ExecutionContextNotice
+      executionContext={isLiveData ? 'native-desktop' : 'simulated-preview'}
+    />
 
     {#if activeSection === 'dashboard'}
       {#if selectedSnapshot}
@@ -204,7 +249,11 @@
                 onSelect={(id) => (selectedBatteryId = id)}
               />
             {/if}
-            <p>{scenario.description}</p>
+            <p>
+              {isLiveData
+                ? 'Read locally from available Linux battery providers. Each metric names its source.'
+                : scenario.description}
+            </p>
           </div>
         </section>
 
@@ -258,24 +307,32 @@
           />
         </section>
 
-        <section class="chart-grid" aria-label="Simulated charts">
-          <TimeSeriesChart
-            id="power-chart"
-            title="Battery power"
-            description="Simulated charging and discharging observations from the last seven hours."
-            points={powerPoints}
-            formatValue={formatPower}
-            color="var(--color-power)"
+        {#if isLiveData}
+          <EmptyState
+            title="Recent history is not recorded yet"
+            message="Live readings are available now. Charts will use the optional local recorder in a later phase."
+            hint="No measurements are persisted while recording has not been implemented and enabled."
           />
-          <TimeSeriesChart
-            id="charge-chart"
-            title="Charge level"
-            description="A fixture preview of how a persisted charge trend will be displayed."
-            points={percentagePoints}
-            formatValue={formatPercentage}
-            color="var(--color-accent)"
-          />
-        </section>
+        {:else}
+          <section class="chart-grid" aria-label="Simulated charts">
+            <TimeSeriesChart
+              id="power-chart"
+              title="Battery power"
+              description="Simulated charging and discharging observations from the last seven hours."
+              points={powerPoints}
+              formatValue={formatPower}
+              color="var(--color-power)"
+            />
+            <TimeSeriesChart
+              id="charge-chart"
+              title="Charge level"
+              description="A fixture preview of how a persisted charge trend will be displayed."
+              points={percentagePoints}
+              formatValue={formatPercentage}
+              color="var(--color-accent)"
+            />
+          </section>
+        {/if}
       {:else}
         <EmptyState
           title="No battery detected"

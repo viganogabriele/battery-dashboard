@@ -21,10 +21,15 @@ and it has no tray or top-bar icon. The shell does not start a production
 localhost server; Vite remains development-only and packaged builds load static
 assets through Tauri.
 
-The desktop window will be responsible for live display once live providers
-are implemented. The recorder will be a separate one-shot executable so
-history can continue to be collected while the window is closed. It is never a
-custom daemon.
+The desktop window now reads live data through a single Tauri command. The
+command queries UPower over the system D-Bus and Linux sysfs under
+`/sys/class/power_supply`, then selects a valid field-level value while
+retaining its `upower`, `sysfs`, or `derived` provenance. UPower's aggregate
+`DisplayDevice` and non-power-supply peripherals are excluded; physical sysfs
+batteries are discovered by `type=Battery`, not assumed to be named `BAT0`.
+
+The recorder will be a separate one-shot executable so history can continue to
+be collected while the window is closed. It is never a custom daemon.
 
 ## Portable boundaries
 

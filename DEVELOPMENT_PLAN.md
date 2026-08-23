@@ -7,10 +7,10 @@ It captures the agreed product scope, architecture, portability strategy,
 development phases, quality gates, privacy constraints, and known hardware
 limitations.
 
-Phases 1–3 are complete: the repository foundation, simulated Svelte dashboard,
-and Tauri desktop shell are implemented. Implementation continues phase by
-phase. Advanced features must not be implemented before the core version is
-stable.
+Phases 1–4 are complete: the repository foundation, simulated Svelte dashboard,
+Tauri desktop shell, and live UPower/sysfs reader are implemented.
+Implementation continues phase by phase. Advanced features must not be
+implemented before the core version is stable.
 
 ## 2. Product vision
 
@@ -699,7 +699,7 @@ Exit tests:
 - offline static-bundle smoke test;
 - frontend quality suite.
 
-### Phase 4 — Real UPower and sysfs data
+### Phase 4 — Real UPower and sysfs data — Complete
 
 Deliverables:
 

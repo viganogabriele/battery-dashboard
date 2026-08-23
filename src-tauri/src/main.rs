@@ -2,9 +2,17 @@
 
 #![forbid(unsafe_code)]
 
+mod battery;
+
+/// Returns current battery readings without persisting or altering system state.
+#[tauri::command]
+async fn get_battery_dashboard() -> battery::BatteryDashboardResponse {
+    battery::read_dashboard().await
+}
+
 /// Creates the desktop application builder.
 fn app_builder() -> tauri::Builder<tauri::Wry> {
-    tauri::Builder::default()
+    tauri::Builder::default().invoke_handler(tauri::generate_handler![get_battery_dashboard])
 }
 
 fn main() {

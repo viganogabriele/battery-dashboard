@@ -51,6 +51,12 @@ and a short launch of the compiled desktop executable. The existing fixture
 tests remain the source of truth for the simulated dashboard; no real-hardware
 assertion is introduced by the desktop shell.
 
+Phase 4 adds deterministic sysfs and UPower mapping tests, including multiple
+batteries, non-battery supplies, missing fields, malformed values, sentinels,
+and source precedence. It also uses a live Arch hardware smoke test through the
+native Tauri command. The smoke test confirms only that the current machine can
+be read; it does not turn its firmware fields into a portability guarantee.
+
 The persistence phase will add migration, rollback, concurrency, integrity,
 recorder, and systemd user-unit checks. Later phases will add chart range and
 downsampling checks, session reconstruction, timezone/DST aggregation, health
