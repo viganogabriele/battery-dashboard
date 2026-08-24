@@ -72,7 +72,7 @@
     align-self: center;
     margin: 0.25rem 0;
     color: var(--color-text-primary);
-    font-size: clamp(1.4rem, 4vw, 2rem);
+    font-size: 1.8rem;
     font-weight: 700;
     letter-spacing: -0.04em;
   }

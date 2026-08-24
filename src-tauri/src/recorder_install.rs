@@ -10,6 +10,8 @@ use std::{
     fs::OpenOptions,
     io::Write,
     path::{Path, PathBuf},
+    sync::atomic::{AtomicU64, Ordering},
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 use crate::{scheduler, storage};
@@ -155,7 +157,12 @@ fn stage_recorder_at(
     let recorder_path_string = recorder_path
         .to_str()
         .ok_or_else(|| RecorderInstallError::NonUnicodePath(recorder_path.clone()))?;
-    let rendered_service = scheduler::render_recorder_service(recorder_path_string)?;
+    let data_home_string = data_home
+        .as_ref()
+        .to_str()
+        .ok_or_else(|| RecorderInstallError::NonUnicodePath(data_home.as_ref().to_owned()))?;
+    let rendered_service =
+        scheduler::render_recorder_service_with_data_home(recorder_path_string, data_home_string)?;
     let recorder_bytes = fs::read(recorder_source)?;
 
     atomic_write(&recorder_path, &recorder_bytes, 0o700)?;
@@ -201,21 +208,37 @@ fn atomic_write(path: &Path, contents: &[u8], mode: u32) -> Result<(), RecorderI
     })?;
     fs::create_dir_all(parent)?;
     let temporary = parent.join(format!(
-        ".{}.{}.tmp",
+        ".{}.{}-{}-{}.tmp",
         path.file_name()
             .and_then(|name| name.to_str())
             .unwrap_or("recorder"),
-        std::process::id()
+        std::process::id(),
+        next_temporary_file_id(),
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_or(0, |duration| duration.as_nanos())
     ));
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&temporary)?;
-    file.write_all(contents)?;
-    file.sync_all()?;
-    set_permissions(&temporary, mode)?;
-    fs::rename(&temporary, path)?;
-    Ok(())
+    let result = (|| {
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(contents)?;
+        file.sync_all()?;
+        set_permissions(&temporary, mode)?;
+        fs::rename(&temporary, path)?;
+        Ok(())
+    })();
+    if result.is_err() {
+        let _ = fs::remove_file(&temporary);
+    }
+    result
+}
+
+static NEXT_TEMPORARY_FILE_ID: AtomicU64 = AtomicU64::new(0);
+
+fn next_temporary_file_id() -> u64 {
+    NEXT_TEMPORARY_FILE_ID.fetch_add(1, Ordering::Relaxed)
 }
 
 #[cfg(unix)]
@@ -275,6 +298,7 @@ mod tests {
                     .expect("UTF-8 test path")
             )
         );
+        assert!(service.contains("Environment=XDG_DATA_HOME=\""));
         assert!(installation.timer_path.is_file());
 
         fs::remove_dir_all(root).expect("test directory is removed");

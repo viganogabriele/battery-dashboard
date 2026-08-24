@@ -346,16 +346,26 @@ pub struct HistoryMetricSummary {
 }
 
 /// Summary calculated before visual downsampling.
+///
+/// Numeric field summaries are over the raw observations. An unfiltered query
+/// must not be read as a synthetic battery: callers that need a physical
+/// aggregate should combine compatible fields explicitly and preserve missing
+/// values.
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 #[allow(missing_docs)]
 pub struct HistorySummary {
     /// Number of raw, durable samples in the requested range.
     pub sample_count: usize,
-    /// Total duration across contiguous observed intervals only.
+    /// Wall-clock coverage across the union of contiguous observed intervals.
+    /// For an unfiltered multi-battery query, overlapping battery intervals are
+    /// counted once rather than multiplying the same elapsed time by battery
+    /// count.
     pub observed_duration_seconds: Option<f64>,
-    /// Signed watt-hours integrated from power only when every observed
-    /// contiguous interval contains a valid power reading. Otherwise absent.
+    /// Signed watt-hours integrated per battery from power only when every
+    /// observed interval has valid endpoint power and every selected battery
+    /// contributes an interval. Otherwise absent; no missing battery is
+    /// treated as zero.
     pub observed_energy_wh: Option<f64>,
     pub percentage: HistoryMetricSummary,
     pub energy_now_wh: HistoryMetricSummary,
@@ -918,6 +928,7 @@ pub fn last_recorded_at_if_exists() -> Result<Option<OffsetDateTime>, StorageErr
         return Ok(None);
     };
     let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+    configure_read_connection(&connection)?;
     let timestamp: Option<String> = connection
         .query_row(
             "SELECT recorded_at_utc FROM battery_samples ORDER BY recorded_at_utc DESC LIMIT 1",
@@ -941,6 +952,46 @@ struct RawHistorySample {
     battery_id: String,
     recorded_at: OffsetDateTime,
     sample: HistorySample,
+}
+
+/// Returns the duration that can safely be attributed to two adjacent
+/// observations from one boot. Wall-clock time is used to reject clock
+/// reversals and long absences, while boot-relative time supplies the duration
+/// itself so small wall-clock adjustments do not create or erase observed time.
+fn contiguous_interval_seconds(
+    first_recorded_at: OffsetDateTime,
+    second_recorded_at: OffsetDateTime,
+    first_boot_id: &str,
+    second_boot_id: &str,
+    first_boot_seconds: f64,
+    second_boot_seconds: f64,
+) -> Option<f64> {
+    if first_boot_id != second_boot_id {
+        return None;
+    }
+    let wall_seconds = (second_recorded_at - first_recorded_at).as_seconds_f64();
+    let boot_seconds = second_boot_seconds - first_boot_seconds;
+    if !wall_seconds.is_finite()
+        || !boot_seconds.is_finite()
+        || wall_seconds <= 0.0
+        || boot_seconds <= 0.0
+        || wall_seconds > MAX_CONTIGUOUS_SAMPLE_SECONDS
+        || boot_seconds > MAX_CONTIGUOUS_SAMPLE_SECONDS
+    {
+        return None;
+    }
+    Some(boot_seconds)
+}
+
+fn history_interval_seconds(first: &RawHistorySample, second: &RawHistorySample) -> Option<f64> {
+    contiguous_interval_seconds(
+        first.recorded_at,
+        second.recorded_at,
+        &first.sample.boot_id,
+        &second.sample.boot_id,
+        first.sample.boot_seconds,
+        second.sample.boot_seconds,
+    )
 }
 
 fn raw_history_sample(row: &Row<'_>) -> rusqlite::Result<RawHistorySample> {
@@ -1032,6 +1083,7 @@ struct RawSessionSample {
     recorded_at: OffsetDateTime,
     state: SampleState,
     boot_id: String,
+    boot_seconds: f64,
     percentage: Option<f64>,
     energy_now_wh: Option<f64>,
     power_watts: Option<f64>,
@@ -1039,7 +1091,8 @@ struct RawSessionSample {
 
 fn load_session_samples(connection: &Connection) -> Result<Vec<RawSessionSample>, StorageError> {
     let mut statement = connection.prepare(
-        "SELECT battery_id, recorded_at_utc, state, boot_id, percentage, energy_now_wh, power_watts
+        "SELECT battery_id, recorded_at_utc, state, boot_id, boot_seconds,
+                percentage, energy_now_wh, power_watts
          FROM battery_samples ORDER BY battery_id ASC, recorded_at_utc ASC, id ASC",
     )?;
     statement
@@ -1057,9 +1110,10 @@ fn load_session_samples(connection: &Connection) -> Result<Vec<RawSessionSample>
                 recorded_at: recorded_at.to_offset(time::UtcOffset::UTC),
                 state: sample_state_from_database(&row.get::<_, String>(2)?)?,
                 boot_id: row.get(3)?,
-                percentage: row.get(4)?,
-                energy_now_wh: row.get(5)?,
-                power_watts: row.get(6)?,
+                boot_seconds: row.get(4)?,
+                percentage: row.get(5)?,
+                energy_now_wh: row.get(6)?,
+                power_watts: row.get(7)?,
             })
         })?
         .collect::<Result<Vec<_>, _>>()
@@ -1091,8 +1145,15 @@ fn derive_sessions(samples: &[RawSessionSample]) -> Vec<BatterySession> {
             let current = &battery_samples[index];
             let reason = if previous.boot_id != current.boot_id {
                 Some(SessionInterruptReason::BootChanged)
-            } else if (current.recorded_at - previous.recorded_at).as_seconds_f64()
-                > MAX_CONTIGUOUS_SAMPLE_SECONDS
+            } else if contiguous_interval_seconds(
+                previous.recorded_at,
+                current.recorded_at,
+                &previous.boot_id,
+                &current.boot_id,
+                previous.boot_seconds,
+                current.boot_seconds,
+            )
+            .is_none()
             {
                 Some(SessionInterruptReason::SampleGap)
             } else if previous.state != current.state {
@@ -1124,25 +1185,33 @@ fn build_session(
     debug_assert!(!samples.is_empty());
     let first = &samples[0];
     let last = samples.last().expect("nonempty session");
-    let duration = (samples.len() > 1).then(|| {
-        samples
-            .windows(2)
-            .map(|pair| (pair[1].recorded_at - pair[0].recorded_at).as_seconds_f64())
-            .sum()
+    let intervals = samples
+        .windows(2)
+        .map(|pair| {
+            contiguous_interval_seconds(
+                pair[0].recorded_at,
+                pair[1].recorded_at,
+                &pair[0].boot_id,
+                &pair[1].boot_id,
+                pair[0].boot_seconds,
+                pair[1].boot_seconds,
+            )
+        })
+        .collect::<Option<Vec<_>>>();
+    let duration = intervals.as_ref().and_then(|intervals| {
+        let total = intervals.iter().sum::<f64>();
+        (total > 0.0).then_some(total)
     });
     let complete_metric = |values: Vec<Option<f64>>| values.into_iter().collect::<Option<Vec<_>>>();
     let percentages = complete_metric(samples.iter().map(|sample| sample.percentage).collect());
     let energy = complete_metric(samples.iter().map(|sample| sample.energy_now_wh).collect());
     let powers = complete_metric(samples.iter().map(|sample| sample.power_watts).collect());
-    let average_power_watts = match (duration, powers) {
-        (Some(seconds), Some(powers)) if seconds > 0.0 => Some(
-            samples
-                .windows(2)
+    let average_power_watts = match (duration, intervals, powers) {
+        (Some(seconds), Some(intervals), Some(powers)) if seconds > 0.0 => Some(
+            intervals
+                .iter()
                 .zip(powers.windows(2))
-                .map(|(pair, power)| {
-                    power[0].midpoint(power[1])
-                        * (pair[1].recorded_at - pair[0].recorded_at).as_seconds_f64()
-                })
+                .map(|(interval, power)| power[0].midpoint(power[1]) * interval)
                 .sum::<f64>()
                 / seconds,
         ),
@@ -1277,14 +1346,35 @@ fn history_response(
 ) -> Result<HistoryResponse, StorageError> {
     let gaps = history_gaps(raw);
     let summary = history_summary(raw, &gaps);
-    let selected = downsample_indices(raw.len(), query.max_points, &gaps);
+    let selected = if query.battery_id.is_none() {
+        downsample_timestamp_groups(raw, query.max_points, &gaps)
+    } else {
+        downsample_indices(raw.len(), query.max_points, &gaps)
+    };
     let mut timeline = Vec::with_capacity(selected.len() + gaps.len());
     for index in selected {
         timeline.push(HistoryTimelineItem::Sample(Box::new(
             raw[index].sample.clone(),
         )));
-        for (_, gap) in gaps.iter().filter(|(gap_index, _)| *gap_index == index) {
-            timeline.push(HistoryTimelineItem::Gap(gap.clone()));
+        let gap_anchor = if query.battery_id.is_none() {
+            (timestamp_group_end(raw, index) == index + 1).then_some(index)
+        } else {
+            Some(index)
+        };
+        if let Some(gap_anchor) = gap_anchor {
+            for (_, gap) in gaps.iter().filter(|(gap_index, _)| {
+                if query.battery_id.is_none() {
+                    // An aggregate timestamp group may contain several
+                    // battery rows.  A gap belongs after its *entire*
+                    // source instant, rather than after the one row for
+                    // the battery that exposed it.
+                    timestamp_group_end(raw, *gap_index) - 1 == gap_anchor
+                } else {
+                    *gap_index == gap_anchor
+                }
+            }) {
+                timeline.push(HistoryTimelineItem::Gap(gap.clone()));
+            }
         }
     }
     Ok(HistoryResponse {
@@ -1318,9 +1408,7 @@ fn history_gaps(raw: &[RawHistorySample]) -> Vec<(usize, HistoryGap)> {
                     let second = &raw[second_index];
                     let reason = if first.sample.boot_id != second.sample.boot_id {
                         Some(HistoryGapReason::BootChanged)
-                    } else if (second.recorded_at - first.recorded_at).as_seconds_f64()
-                        > MAX_CONTIGUOUS_SAMPLE_SECONDS
-                    {
+                    } else if history_interval_seconds(first, second).is_none() {
                         Some(HistoryGapReason::SampleIntervalExceeded)
                     } else {
                         None
@@ -1377,38 +1465,129 @@ fn downsample_indices(
     selected.into_iter().collect()
 }
 
+/// Downsamples an aggregate history by collection instant rather than by raw
+/// row. Every physical battery observed at a selected instant stays together;
+/// otherwise a compact aggregate chart can accidentally combine half of one
+/// instant with half of another and report a false missing-battery gap.
+fn downsample_timestamp_groups(
+    raw: &[RawHistorySample],
+    max_points: usize,
+    gaps: &[(usize, HistoryGap)],
+) -> Vec<usize> {
+    if raw.is_empty() {
+        return Vec::new();
+    }
+
+    let mut groups = Vec::<(usize, usize)>::new();
+    let mut start = 0;
+    while start < raw.len() {
+        let end = timestamp_group_end(raw, start);
+        groups.push((start, end));
+        start = end;
+    }
+
+    let group_for_row = |row_index: usize| {
+        groups
+            .iter()
+            .position(|(group_start, group_end)| {
+                *group_start <= row_index && row_index < *group_end
+            })
+            .expect("every raw history row belongs to a timestamp group")
+    };
+    let group_gaps = gaps
+        .iter()
+        .map(|(row_index, _)| {
+            (
+                group_for_row(*row_index),
+                HistoryGap {
+                    from: String::new(),
+                    to: String::new(),
+                    reason: HistoryGapReason::SampleIntervalExceeded,
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    let selected_groups = downsample_indices(groups.len(), max_points, &group_gaps);
+    selected_groups
+        .into_iter()
+        .flat_map(|group_index| groups[group_index].0..groups[group_index].1)
+        .collect()
+}
+
+fn timestamp_group_end(raw: &[RawHistorySample], start: usize) -> usize {
+    let timestamp = &raw[start].sample.recorded_at;
+    let mut end = start + 1;
+    while end < raw.len() && raw[end].sample.recorded_at == *timestamp {
+        end += 1;
+    }
+    end
+}
+
 fn history_summary(raw: &[RawHistorySample], gaps: &[(usize, HistoryGap)]) -> HistorySummary {
+    use std::collections::{BTreeMap, BTreeSet};
+
     let discontinuities = gaps
         .iter()
         .map(|(index, _)| *index)
-        .collect::<std::collections::BTreeSet<_>>();
-    let mut observed_seconds = 0.0;
+        .collect::<BTreeSet<_>>();
+    let mut intervals = Vec::<(OffsetDateTime, OffsetDateTime, f64)>::new();
     let mut observed_energy_watt_seconds = 0.0;
     let mut energy_supported = raw.len() >= 2;
-    for (index, pair) in raw.windows(2).enumerate() {
-        if discontinuities.contains(&index) {
-            continue;
-        }
-        let seconds = (pair[1].recorded_at - pair[0].recorded_at).as_seconds_f64();
-        if seconds <= 0.0 {
-            continue;
-        }
-        observed_seconds += seconds;
-        match (
-            pair[0].sample.metrics.power_watts.value,
-            pair[1].sample.metrics.power_watts.value,
-        ) {
-            (Some(first), Some(second)) => {
-                observed_energy_watt_seconds += first.midpoint(second) * seconds;
+    let mut battery_ids = BTreeSet::<&str>::new();
+    let mut battery_has_interval = BTreeMap::<&str, bool>::new();
+    for sample in raw {
+        battery_ids.insert(sample.battery_id.as_str());
+        battery_has_interval
+            .entry(sample.battery_id.as_str())
+            .or_insert(false);
+    }
+    let mut indices_by_battery = BTreeMap::<&str, Vec<usize>>::new();
+    for (index, sample) in raw.iter().enumerate() {
+        indices_by_battery
+            .entry(sample.battery_id.as_str())
+            .or_default()
+            .push(index);
+    }
+    for indices in indices_by_battery.values() {
+        for pair in indices.windows(2) {
+            let first_index = pair[0];
+            let second_index = pair[1];
+            if discontinuities.contains(&first_index) {
+                continue;
             }
-            _ => energy_supported = false,
+            let first = &raw[first_index];
+            let second = &raw[second_index];
+            let Some(seconds) = history_interval_seconds(first, second) else {
+                energy_supported = false;
+                continue;
+            };
+            intervals.push((first.recorded_at, second.recorded_at, seconds));
+            battery_has_interval.insert(first.battery_id.as_str(), true);
+            match (
+                first.sample.metrics.power_watts.value,
+                second.sample.metrics.power_watts.value,
+            ) {
+                (Some(first_power), Some(second_power)) => {
+                    observed_energy_watt_seconds += first_power.midpoint(second_power) * seconds;
+                }
+                _ => energy_supported = false,
+            }
         }
     }
+    let observed_seconds = union_observed_duration(&intervals);
+    let all_batteries_have_intervals = battery_ids.iter().all(|battery_id| {
+        battery_has_interval
+            .get(battery_id)
+            .copied()
+            .unwrap_or(false)
+    });
     HistorySummary {
         sample_count: raw.len(),
-        observed_duration_seconds: (observed_seconds > 0.0).then_some(observed_seconds),
-        observed_energy_wh: (energy_supported && observed_seconds > 0.0)
-            .then_some(observed_energy_watt_seconds / 3600.0),
+        observed_duration_seconds: observed_seconds,
+        observed_energy_wh: (energy_supported
+            && all_batteries_have_intervals
+            && !intervals.is_empty())
+        .then_some(observed_energy_watt_seconds / 3600.0),
         percentage: metric_summary(
             raw.iter()
                 .map(|sample| sample.sample.metrics.percentage.value),
@@ -1434,6 +1613,31 @@ fn history_summary(raw: &[RawHistorySample], gaps: &[(usize, HistoryGap)]) -> Hi
                 .map(|sample| sample.sample.metrics.temperature_celsius.value),
         ),
     }
+}
+
+fn union_observed_duration(intervals: &[(OffsetDateTime, OffsetDateTime, f64)]) -> Option<f64> {
+    if intervals.is_empty() {
+        return None;
+    }
+    let mut ordered = intervals.to_vec();
+    ordered.sort_by_key(|(start, end, _)| (*start, *end));
+
+    let mut total = 0.0;
+    let mut current_start = ordered[0].0;
+    let mut current_end = ordered[0].1;
+    for (start, end, _) in ordered.into_iter().skip(1) {
+        if start <= current_end {
+            if end > current_end {
+                current_end = end;
+            }
+        } else {
+            total += (current_end - current_start).as_seconds_f64();
+            current_start = start;
+            current_end = end;
+        }
+    }
+    total += (current_end - current_start).as_seconds_f64();
+    (total > 0.0).then_some(total)
 }
 
 fn metric_summary(values: impl Iterator<Item = Option<f64>>) -> HistoryMetricSummary {
@@ -1582,6 +1786,11 @@ fn is_unique_constraint(error: &rusqlite::Error) -> bool {
         error,
         rusqlite::Error::SqliteFailure(failure, _)
             if failure.code == ErrorCode::ConstraintViolation
+                && matches!(
+                    failure.extended_code,
+                    rusqlite::ffi::SQLITE_CONSTRAINT_PRIMARYKEY
+                        | rusqlite::ffi::SQLITE_CONSTRAINT_UNIQUE
+                )
     )
 }
 
@@ -1595,9 +1804,9 @@ mod tests {
 
     use super::{
         BatterySessionKind, HistoryFreshness, HistoryGapReason, HistoryQuery, HistoryTimelineItem,
-        InsertOutcome, MetricSource, NewBatterySample, SampleMetric, SampleMetrics, SampleState,
-        SessionAggregationPeriod, SessionInterruptReason, SessionQuery, Storage, StorageError,
-        database_path_from_data_home, session_bucket,
+        InsertOutcome, MAX_CONTIGUOUS_SAMPLE_SECONDS, MetricSource, NewBatterySample, SampleMetric,
+        SampleMetrics, SampleState, SessionAggregationPeriod, SessionInterruptReason, SessionQuery,
+        Storage, StorageError, database_path_from_data_home, session_bucket,
     };
     use time::{OffsetDateTime, macros::datetime};
 
@@ -1873,6 +2082,108 @@ mod tests {
         assert_eq!(timestamps.first(), Some(&"2026-08-23T12:00:00Z"));
         assert_eq!(timestamps.last(), Some(&"2026-08-23T12:09:00Z"));
         assert_eq!(first.summary.sample_count, 10);
+        drop(storage);
+        fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn aggregate_history_keeps_batteries_together_and_does_not_cross_join_intervals() {
+        let root = temporary_path("history-multiple-aggregate");
+        let path = database_path_from_data_home(&root);
+        let mut storage = Storage::open_at(&path).expect("database opens");
+        let first = sample_at(0, Some(80.0));
+        let second = sample_at(1, Some(79.0));
+        let mut other_first = first.clone();
+        other_first.battery_id = "BAT1".to_owned();
+        let mut other_second = second.clone();
+        other_second.battery_id = "BAT1".to_owned();
+        for sample in [first, other_first, second, other_second] {
+            storage.insert_sample(&sample).expect("sample inserts");
+        }
+
+        let result = storage
+            .history(&history_query(None, 1))
+            .expect("aggregate history reads");
+        let samples = result
+            .timeline
+            .iter()
+            .filter(|item| matches!(item, HistoryTimelineItem::Sample(_)))
+            .count();
+        assert_eq!(samples, 4, "one selected instant retains every battery row");
+        assert_eq!(result.summary.observed_duration_seconds, Some(60.0));
+        assert_eq!(result.summary.observed_energy_wh, Some(-0.28));
+        assert!(
+            result
+                .timeline
+                .iter()
+                .all(|item| !matches!(item, HistoryTimelineItem::Gap(_)))
+        );
+
+        drop(storage);
+        fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn aggregate_history_places_a_battery_gap_after_the_shared_instant() {
+        let root = temporary_path("history-aggregate-gap-placement");
+        let path = database_path_from_data_home(&root);
+        let mut storage = Storage::open_at(&path).expect("database opens");
+        let first = sample_at(0, Some(80.0));
+        let mut other_first = first.clone();
+        other_first.battery_id = "BAT1".to_owned();
+        let mut other_second = sample_at(1, Some(79.0));
+        other_second.battery_id = "BAT1".to_owned();
+        let second = sample_at(10, Some(70.0));
+        for sample in [first, other_first, other_second, second] {
+            storage.insert_sample(&sample).expect("sample inserts");
+        }
+
+        let result = storage
+            .history(&history_query(None, 10))
+            .expect("aggregate history reads");
+        assert!(matches!(
+            result.timeline.as_slice(),
+            [
+                HistoryTimelineItem::Sample(_),
+                HistoryTimelineItem::Sample(_),
+                HistoryTimelineItem::Gap(_),
+                HistoryTimelineItem::Sample(_),
+                HistoryTimelineItem::Sample(_),
+            ]
+        ));
+
+        drop(storage);
+        fs::remove_dir_all(root).expect("test directory is removable");
+    }
+
+    #[test]
+    fn monotonic_boot_gap_breaks_history_even_when_wall_time_is_short() {
+        let root = temporary_path("history-monotonic-gap");
+        let path = database_path_from_data_home(&root);
+        let mut storage = Storage::open_at(&path).expect("database opens");
+        let first = sample_at(0, Some(80.0));
+        let mut second = sample_at(1, Some(79.0));
+        second.boot_seconds += MAX_CONTIGUOUS_SAMPLE_SECONDS + 1.0;
+        storage.insert_sample(&first).expect("first inserts");
+        storage.insert_sample(&second).expect("second inserts");
+
+        let result = storage
+            .history(&history_query(Some("BAT0"), 10))
+            .expect("history reads");
+        assert_eq!(
+            result
+                .timeline
+                .iter()
+                .filter_map(|item| match item {
+                    HistoryTimelineItem::Gap(gap) => Some(gap.reason),
+                    HistoryTimelineItem::Sample(_) => None,
+                })
+                .collect::<Vec<_>>(),
+            vec![HistoryGapReason::SampleIntervalExceeded]
+        );
+        assert_eq!(result.summary.observed_duration_seconds, None);
+        assert_eq!(result.summary.observed_energy_wh, None);
+
         drop(storage);
         fs::remove_dir_all(root).expect("test directory is removable");
     }

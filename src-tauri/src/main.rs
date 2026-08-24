@@ -2,16 +2,19 @@
 
 #![forbid(unsafe_code)]
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 use battery_dashboard_desktop::{
-    battery, recorder_install,
+    anomalies, battery, export, health, power_profile, recorder_install,
     scheduler::{SchedulerStatus, SystemdUserScheduler},
     storage,
 };
 use chrono::{Datelike, NaiveDate, TimeZone, Utc};
 use chrono_tz::Tz;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
 /// Returns current battery readings without persisting or altering system state.
@@ -104,6 +107,347 @@ async fn get_recent_battery_history(
         gaps: mapped.gaps,
         summary,
     }
+}
+
+/// Returns conservative health values derived only from recorded `SQLite` samples.
+///
+/// Supplying no battery identifier is safe only when the history contains one
+/// physical battery.  Capacity observations from multiple batteries are never
+/// combined into a synthetic health value.  A missing metric remains `null` in
+/// the response, and cycle count is returned only when the provider recorded a
+/// hardware value.
+#[tauri::command]
+fn get_battery_health(battery_id: Option<String>) -> BatteryHealthResponse {
+    if battery_id
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return unavailable_battery_health(battery_id, "invalid-request");
+    }
+
+    let query = all_history_query(battery_id.clone());
+    let history = match storage::history_if_exists(&query) {
+        Ok(Some(history)) => history,
+        Ok(None) => {
+            return unavailable_battery_health(
+                battery_id,
+                recorder_unavailable_reason(recorder_state()),
+            );
+        }
+        Err(_) => return unavailable_battery_health(battery_id, "database-unavailable"),
+    };
+    let samples = history_samples(&history);
+    if samples.is_empty() {
+        return unavailable_battery_health(battery_id, "no-recorded-samples");
+    }
+
+    // An unfiltered query may contain more than one physical battery.  The
+    // analysis layer intentionally refuses to combine those values, but the
+    // command reports a dedicated reason so the UI can ask the user to select
+    // one rather than presenting generic missing data.
+    if battery_id.is_none() && distinct_battery_ids(&samples).len() > 1 {
+        return unavailable_battery_health(None, "multiple-batteries");
+    }
+
+    let report = health::analyze(&samples);
+    available_battery_health(report)
+}
+
+fn all_history_query(battery_id: Option<String>) -> storage::HistoryQuery {
+    storage::HistoryQuery {
+        start: OffsetDateTime::UNIX_EPOCH,
+        end: OffsetDateTime::now_utc(),
+        battery_id,
+        // Health and export are reports over the immutable history, not chart
+        // reads.  Keep every raw observation so daily medians and exported
+        // records cannot be changed by visual downsampling.
+        max_points: usize::MAX,
+    }
+}
+
+fn history_samples(history: &storage::HistoryResponse) -> Vec<storage::HistorySample> {
+    history
+        .timeline
+        .iter()
+        .filter_map(|item| match item {
+            storage::HistoryTimelineItem::Sample(sample) => Some(sample.as_ref().clone()),
+            storage::HistoryTimelineItem::Gap(_) => None,
+        })
+        .collect()
+}
+
+fn distinct_battery_ids(samples: &[storage::HistorySample]) -> BTreeSet<&str> {
+    samples
+        .iter()
+        .map(|sample| sample.battery_id.as_str())
+        .collect()
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatteryHealthResponse {
+    schema_version: u8,
+    availability: &'static str,
+    unavailable_reason: Option<&'static str>,
+    source: &'static str,
+    battery_id: Option<String>,
+    current_full_capacity_wh: Option<f64>,
+    current_full_capacity_recorded_at: Option<String>,
+    design_capacity_wh: Option<f64>,
+    design_capacity_recorded_at: Option<String>,
+    health_percentage: Option<f64>,
+    health_recorded_at: Option<String>,
+    hardware_cycle_count: Option<u64>,
+    hardware_cycle_count_recorded_at: Option<String>,
+    capacity_history: Vec<HealthCapacityPoint>,
+    trend: &'static str,
+    trend_slope_wh_per_day: Option<f64>,
+    trend_upper_confidence_wh_per_day: Option<f64>,
+    trend_insufficiency_reason: Option<&'static str>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct HealthCapacityPoint {
+    recorded_at: String,
+    full_capacity_wh: f64,
+}
+
+fn unavailable_battery_health(
+    battery_id: Option<String>,
+    reason: &'static str,
+) -> BatteryHealthResponse {
+    BatteryHealthResponse {
+        schema_version: 1,
+        availability: "unavailable",
+        unavailable_reason: Some(reason),
+        source: "unavailable",
+        battery_id,
+        current_full_capacity_wh: None,
+        current_full_capacity_recorded_at: None,
+        design_capacity_wh: None,
+        design_capacity_recorded_at: None,
+        health_percentage: None,
+        health_recorded_at: None,
+        hardware_cycle_count: None,
+        hardware_cycle_count_recorded_at: None,
+        capacity_history: Vec::new(),
+        trend: "insufficient",
+        trend_slope_wh_per_day: None,
+        trend_upper_confidence_wh_per_day: None,
+        trend_insufficiency_reason: Some(reason),
+    }
+}
+
+fn available_battery_health(report: health::BatteryHealthReport) -> BatteryHealthResponse {
+    let trend = match &report.daily_degradation_trend {
+        health::DailyDegradationTrend::Insufficient { .. } => "insufficient",
+        health::DailyDegradationTrend::Inconclusive { .. } => "noisy",
+        health::DailyDegradationTrend::Stable { .. } => "stable",
+        health::DailyDegradationTrend::Degrading { .. } => "degrading",
+    };
+    let (trend_slope_wh_per_day, trend_upper_confidence_wh_per_day, trend_insufficiency_reason) =
+        match report.daily_degradation_trend {
+            health::DailyDegradationTrend::Insufficient { reason } => (
+                None,
+                None,
+                Some(match reason {
+                    health::TrendInsufficiency::TooFewDailyObservations => {
+                        "too-few-daily-observations"
+                    }
+                    health::TrendInsufficiency::TooShortTimeSpan => "too-short-time-span",
+                }),
+            ),
+            health::DailyDegradationTrend::Inconclusive {
+                slope_wh_per_day,
+                upper_confidence_wh_per_day,
+            }
+            | health::DailyDegradationTrend::Degrading {
+                slope_wh_per_day,
+                upper_confidence_wh_per_day,
+            } => (
+                Some(slope_wh_per_day),
+                Some(upper_confidence_wh_per_day),
+                None,
+            ),
+            health::DailyDegradationTrend::Stable { slope_wh_per_day } => {
+                (Some(slope_wh_per_day), None, None)
+            }
+        };
+    BatteryHealthResponse {
+        schema_version: 1,
+        availability: "available",
+        unavailable_reason: None,
+        source: "sqlite",
+        battery_id: report.battery_id,
+        current_full_capacity_wh: report
+            .current_full_capacity
+            .as_ref()
+            .map(|capacity| capacity.watt_hours),
+        current_full_capacity_recorded_at: report
+            .current_full_capacity
+            .as_ref()
+            .map(|capacity| capacity.recorded_at.clone()),
+        design_capacity_wh: report
+            .current_design_capacity
+            .as_ref()
+            .map(|capacity| capacity.watt_hours),
+        design_capacity_recorded_at: report
+            .current_design_capacity
+            .as_ref()
+            .map(|capacity| capacity.recorded_at.clone()),
+        health_percentage: report
+            .health_percentage
+            .as_ref()
+            .map(|health| health.percent),
+        health_recorded_at: report
+            .health_percentage
+            .as_ref()
+            .map(|health| health.recorded_at.clone()),
+        hardware_cycle_count: report
+            .hardware_cycle_count
+            .as_ref()
+            .map(|cycle_count| cycle_count.count),
+        hardware_cycle_count_recorded_at: report
+            .hardware_cycle_count
+            .as_ref()
+            .map(|cycle_count| cycle_count.recorded_at.clone()),
+        capacity_history: report
+            .capacity_over_time
+            .into_iter()
+            .map(|point| HealthCapacityPoint {
+                recorded_at: point.recorded_at,
+                full_capacity_wh: point.full_capacity_wh,
+            })
+            .collect(),
+        trend,
+        trend_slope_wh_per_day,
+        trend_upper_confidence_wh_per_day,
+        trend_insufficiency_reason,
+    }
+}
+
+/// Returns observational anomaly findings from immutable local samples.
+///
+/// The command never combines multiple physical batteries and never fills a
+/// missing metric or interval.  A present but short history is reported as
+/// `insufficient`, while a missing/unreadable backend is `unavailable`.
+#[tauri::command]
+fn get_battery_anomalies(
+    battery_id: Option<String>,
+    range_hours: Option<u16>,
+) -> BatteryAnomaliesResponse {
+    if battery_id
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return unavailable_battery_anomalies(battery_id, 24, "invalid-request");
+    }
+    let range_hours = range_hours.unwrap_or(24);
+    if !(1..=720).contains(&range_hours) {
+        return unavailable_battery_anomalies(battery_id, range_hours, "invalid-request");
+    }
+    let end = OffsetDateTime::now_utc();
+    let start = end - time::Duration::hours(i64::from(range_hours));
+    let query = storage::HistoryQuery {
+        start,
+        end,
+        battery_id: battery_id.clone(),
+        max_points: usize::MAX,
+    };
+    let history = match storage::history_if_exists(&query) {
+        Ok(Some(history)) => history,
+        Ok(None) => {
+            return unavailable_battery_anomalies(
+                battery_id,
+                range_hours,
+                recorder_unavailable_reason(recorder_state()),
+            );
+        }
+        Err(_) => {
+            return unavailable_battery_anomalies(battery_id, range_hours, "database-unavailable");
+        }
+    };
+    let samples = history_samples(&history);
+    if battery_id.is_none() && distinct_battery_ids(&samples).len() > 1 {
+        return unavailable_battery_anomalies(battery_id, range_hours, "multiple-batteries");
+    }
+    anomaly_response(
+        battery_id,
+        range_hours,
+        anomalies::analyze(&history.timeline),
+    )
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BatteryAnomaliesResponse {
+    schema_version: u8,
+    availability: &'static str,
+    unavailable_reason: Option<&'static str>,
+    source: &'static str,
+    battery_id: Option<String>,
+    range_hours: u16,
+    observed_samples: usize,
+    power_samples: usize,
+    discharge_intervals: usize,
+    charging_transitions: usize,
+    anomalies: Vec<anomalies::BatteryAnomaly>,
+}
+
+fn unavailable_battery_anomalies(
+    battery_id: Option<String>,
+    range_hours: u16,
+    reason: &'static str,
+) -> BatteryAnomaliesResponse {
+    BatteryAnomaliesResponse {
+        schema_version: 1,
+        availability: "unavailable",
+        unavailable_reason: Some(reason),
+        source: "unavailable",
+        battery_id,
+        range_hours,
+        observed_samples: 0,
+        power_samples: 0,
+        discharge_intervals: 0,
+        charging_transitions: 0,
+        anomalies: Vec::new(),
+    }
+}
+
+fn anomaly_response(
+    battery_id: Option<String>,
+    range_hours: u16,
+    report: anomalies::AnomalyReport,
+) -> BatteryAnomaliesResponse {
+    BatteryAnomaliesResponse {
+        schema_version: 1,
+        availability: report.availability,
+        unavailable_reason: report
+            .insufficiency_reason
+            .map(anomalies::InsufficiencyReason::as_str),
+        source: "sqlite",
+        battery_id,
+        range_hours,
+        observed_samples: report.observed_samples,
+        power_samples: report.power_samples,
+        discharge_intervals: report.discharge_intervals,
+        charging_transitions: report.charging_transitions,
+        anomalies: report.anomalies,
+    }
+}
+
+/// Reads the active local power profile without changing it.
+#[tauri::command]
+fn get_power_profile() -> power_profile::PowerProfileResponse {
+    power_profile::get_profile()
+}
+
+/// Sets one explicitly allowlisted local power profile and verifies the result.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn set_power_profile(profile: String) -> power_profile::PowerProfileResponse {
+    power_profile::set_profile(&profile)
 }
 
 /// Returns derived sessions and calendar buckets from immutable local samples.
@@ -433,6 +777,424 @@ fn calendar_summaries(
         }
     }
     buckets.into_values().collect()
+}
+
+/// A user-initiated export request.  The destination is intentionally a
+/// required caller value: the command never invents an application path or
+/// silently writes into the database directory.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportRequest {
+    data_type: String,
+    format: String,
+    destination: String,
+    #[serde(default)]
+    battery_id: Option<String>,
+    #[serde(default)]
+    start_date: Option<String>,
+    #[serde(default)]
+    end_date: Option<String>,
+    #[serde(default)]
+    timezone: Option<String>,
+    #[serde(default)]
+    summary_period: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ExportDataType {
+    RawSamples,
+    Sessions,
+    Summaries,
+}
+
+impl ExportDataType {
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "raw-samples" | "raw_samples" | "rawSamples" => Some(Self::RawSamples),
+            "sessions" => Some(Self::Sessions),
+            "summaries" | "calendar-summaries" | "calendar_summaries" => Some(Self::Summaries),
+            _ => None,
+        }
+    }
+
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::RawSamples => "raw-samples",
+            Self::Sessions => "sessions",
+            Self::Summaries => "summaries",
+        }
+    }
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportResponse {
+    schema_version: u8,
+    availability: &'static str,
+    unavailable_reason: Option<&'static str>,
+    data_type: String,
+    format: String,
+    destination: Option<String>,
+    record_count: usize,
+    bytes_written: Option<u64>,
+    error: Option<String>,
+}
+
+/// Exports immutable local history only after the caller supplies an explicit
+/// destination selected by the user.  The writer refuses to replace an
+/// existing file, including when a competing process creates it during the
+/// export.
+#[tauri::command]
+#[allow(clippy::too_many_lines)]
+fn export_battery_history(request: ExportRequest) -> ExportResponse {
+    let requested_data_type = request.data_type.clone();
+    let requested_format = request.format.to_ascii_lowercase();
+    let Some(data_type) = ExportDataType::parse(&requested_data_type) else {
+        return failed_export(
+            requested_data_type,
+            requested_format,
+            Some(request.destination),
+            "invalid-request",
+            "data_type must be raw-samples, sessions, or summaries",
+        );
+    };
+    let format = match requested_format.as_str() {
+        "csv" => export::ExportFormat::Csv,
+        "json" => export::ExportFormat::Json,
+        _ => {
+            return failed_export(
+                data_type.as_str().to_owned(),
+                requested_format,
+                Some(request.destination),
+                "invalid-request",
+                "format must be csv or json",
+            );
+        }
+    };
+    if request.destination.trim().is_empty() {
+        return failed_export(
+            data_type.as_str().to_owned(),
+            format_name(format).to_owned(),
+            None,
+            "invalid-request",
+            "an explicit user-selected destination is required",
+        );
+    }
+    let destination = PathBuf::from(&request.destination);
+    if !destination.is_absolute() {
+        return failed_export(
+            data_type.as_str().to_owned(),
+            format_name(format).to_owned(),
+            Some(request.destination),
+            "invalid-request",
+            "the export destination must be an absolute user-selected path",
+        );
+    }
+    if request
+        .battery_id
+        .as_deref()
+        .is_some_and(|value| value.trim().is_empty())
+    {
+        return failed_export(
+            data_type.as_str().to_owned(),
+            format_name(format).to_owned(),
+            Some(request.destination),
+            "invalid-request",
+            "battery_id must not be empty when supplied",
+        );
+    }
+
+    let timezone_name = request.timezone.as_deref().unwrap_or("UTC");
+    let Ok(timezone) = timezone_name.parse::<Tz>() else {
+        return failed_export(
+            data_type.as_str().to_owned(),
+            format_name(format).to_owned(),
+            Some(request.destination),
+            "invalid-request",
+            "timezone must be a valid IANA timezone",
+        );
+    };
+    let Ok((start, end)) = export_date_range(
+        timezone,
+        request.start_date.as_deref(),
+        request.end_date.as_deref(),
+    ) else {
+        return failed_export(
+            data_type.as_str().to_owned(),
+            format_name(format).to_owned(),
+            Some(request.destination),
+            "invalid-request",
+            "start_date and end_date must be ordered YYYY-MM-DD values",
+        );
+    };
+
+    let metadata = export::ExportMetadata {
+        generated_at: format_timestamp(OffsetDateTime::now_utc())
+            .expect("UTC timestamps are representable as RFC 3339"),
+        timezone: timezone.name().to_owned(),
+    };
+    let records = match load_export_records(
+        data_type,
+        request.battery_id,
+        start,
+        end,
+        timezone,
+        request.summary_period.as_deref(),
+    ) {
+        Ok(records) => records,
+        Err(ExportLoadError::Unavailable(reason)) => {
+            return failed_export(
+                data_type.as_str().to_owned(),
+                format_name(format).to_owned(),
+                Some(request.destination),
+                reason,
+                export_unavailable_message(reason),
+            );
+        }
+        Err(ExportLoadError::Invalid(message)) => {
+            return failed_export(
+                data_type.as_str().to_owned(),
+                format_name(format).to_owned(),
+                Some(request.destination),
+                "invalid-request",
+                message,
+            );
+        }
+        Err(ExportLoadError::Database) => {
+            return failed_export(
+                data_type.as_str().to_owned(),
+                format_name(format).to_owned(),
+                Some(request.destination),
+                "database-unavailable",
+                "the local history database could not be read",
+            );
+        }
+    };
+    let record_count = export_record_count(&records);
+    if record_count == 0 {
+        return failed_export(
+            data_type.as_str().to_owned(),
+            format_name(format).to_owned(),
+            Some(request.destination),
+            "no-recorded-samples",
+            "no recorded rows match the export request",
+        );
+    }
+
+    let document = export::ExportDocument { metadata, records };
+    match export::write_export(&destination, &document, format) {
+        Ok(()) => ExportResponse {
+            schema_version: 1,
+            availability: "available",
+            unavailable_reason: None,
+            data_type: data_type.as_str().to_owned(),
+            format: format_name(format).to_owned(),
+            destination: Some(request.destination),
+            record_count,
+            bytes_written: std::fs::metadata(&destination)
+                .ok()
+                .map(|metadata| metadata.len()),
+            error: None,
+        },
+        Err(error) => {
+            let reason = match error {
+                export::ExportError::DestinationExists(_) => "destination-exists",
+                export::ExportError::InvalidPath(_) => "invalid-destination",
+                export::ExportError::Io(_) => "destination-write-failed",
+            };
+            failed_export(
+                data_type.as_str().to_owned(),
+                format_name(format).to_owned(),
+                Some(request.destination),
+                reason,
+                &error.to_string(),
+            )
+        }
+    }
+}
+
+fn format_name(format: export::ExportFormat) -> &'static str {
+    match format {
+        export::ExportFormat::Csv => "csv",
+        export::ExportFormat::Json => "json",
+    }
+}
+
+fn failed_export(
+    data_type: String,
+    format: String,
+    destination: Option<String>,
+    reason: &'static str,
+    message: &str,
+) -> ExportResponse {
+    ExportResponse {
+        schema_version: 1,
+        availability: "unavailable",
+        unavailable_reason: Some(reason),
+        data_type,
+        format,
+        destination,
+        record_count: 0,
+        bytes_written: None,
+        error: Some(message.to_owned()),
+    }
+}
+
+fn export_unavailable_message(reason: &str) -> &'static str {
+    match reason {
+        "no-recorded-samples" => "no recorded rows match the export request",
+        "recorder-disabled" => "recording is disabled and no history is available",
+        "unsupported" => "local recording is unsupported on this system",
+        _ => "no local history is available",
+    }
+}
+
+fn export_date_range(
+    timezone: Tz,
+    start: Option<&str>,
+    end: Option<&str>,
+) -> Result<(OffsetDateTime, OffsetDateTime), ()> {
+    if start.is_none() && end.is_none() {
+        return Ok((OffsetDateTime::UNIX_EPOCH, OffsetDateTime::now_utc()));
+    }
+    session_date_range(timezone, start, end)
+}
+
+enum ExportLoadError {
+    Unavailable(&'static str),
+    Invalid(&'static str),
+    Database,
+}
+
+fn load_export_records(
+    data_type: ExportDataType,
+    battery_id: Option<String>,
+    start: OffsetDateTime,
+    end: OffsetDateTime,
+    timezone: Tz,
+    summary_period: Option<&str>,
+) -> Result<export::ExportRecords, ExportLoadError> {
+    match data_type {
+        ExportDataType::RawSamples => {
+            let query = storage::HistoryQuery {
+                start,
+                end,
+                battery_id,
+                max_points: usize::MAX,
+            };
+            let history = storage::history_if_exists(&query)
+                .map_err(|_| ExportLoadError::Database)?
+                .ok_or_else(|| {
+                    ExportLoadError::Unavailable(recorder_unavailable_reason(recorder_state()))
+                })?;
+            let samples = history_samples(&history);
+            if samples.is_empty() {
+                return Err(ExportLoadError::Unavailable("no-recorded-samples"));
+            }
+            Ok(export::ExportRecords::RawSamples(samples))
+        }
+        ExportDataType::Sessions | ExportDataType::Summaries => {
+            let Some(path) =
+                storage::existing_database_path().map_err(|_| ExportLoadError::Database)?
+            else {
+                return Err(ExportLoadError::Unavailable(recorder_unavailable_reason(
+                    recorder_state(),
+                )));
+            };
+            let database =
+                storage::Storage::open_at(path).map_err(|_| ExportLoadError::Database)?;
+            let query = storage::SessionQuery {
+                start,
+                end,
+                battery_id,
+            };
+            let sessions = database
+                .sessions(&query)
+                .map_err(|_| ExportLoadError::Database)?;
+            if sessions.is_empty() {
+                return Err(ExportLoadError::Unavailable("no-recorded-samples"));
+            }
+            if data_type == ExportDataType::Sessions {
+                return Ok(export::ExportRecords::Sessions(sessions));
+            }
+            let period = summary_period.unwrap_or("daily");
+            if !matches!(period, "daily" | "weekly" | "monthly") {
+                return Err(ExportLoadError::Invalid(
+                    "summary_period must be daily, weekly, or monthly",
+                ));
+            }
+            let summaries = export_session_summaries(&sessions, timezone, period);
+            if summaries.is_empty() {
+                return Err(ExportLoadError::Unavailable("no-recorded-samples"));
+            }
+            Ok(export::ExportRecords::Summaries(summaries))
+        }
+    }
+}
+
+fn export_record_count(records: &export::ExportRecords) -> usize {
+    match records {
+        export::ExportRecords::RawSamples(records) => records.len(),
+        export::ExportRecords::Sessions(records) => records.len(),
+        export::ExportRecords::Summaries(records) => records.len(),
+    }
+}
+
+fn export_session_summaries(
+    sessions: &[storage::BatterySession],
+    timezone: Tz,
+    period: &str,
+) -> Vec<storage::SessionAggregation> {
+    let mut buckets = BTreeMap::<(String, String), (u64, u64, Option<f64>)>::new();
+    for session in sessions {
+        let Ok(start) = chrono::DateTime::parse_from_rfc3339(&session.started_at) else {
+            continue;
+        };
+        let Ok(end) = chrono::DateTime::parse_from_rfc3339(&session.ended_at) else {
+            continue;
+        };
+        let local_start = start.with_timezone(&timezone);
+        let local_end = end.with_timezone(&timezone);
+        let bucket = export_calendar_bucket(local_start, period);
+        let crosses_boundary = bucket != export_calendar_bucket(local_end, period);
+        let entry = buckets
+            .entry((bucket, session.battery_id.clone()))
+            .or_insert((0, 0, Some(0.0)));
+        entry.0 += 1;
+        entry.1 += u64::from(session.complete);
+        entry.2 = match (entry.2, session.observed_duration_seconds, crosses_boundary) {
+            (Some(total), Some(duration), false) => Some(total + duration),
+            _ => None,
+        };
+    }
+    buckets
+        .into_iter()
+        .map(
+            |(
+                (bucket, battery_id),
+                (session_count, complete_session_count, observed_duration_seconds),
+            )| {
+                storage::SessionAggregation {
+                    bucket,
+                    battery_id,
+                    session_count,
+                    complete_session_count,
+                    observed_duration_seconds,
+                }
+            },
+        )
+        .collect()
+}
+
+fn export_calendar_bucket(timestamp: chrono::DateTime<Tz>, period: &str) -> String {
+    match period {
+        "daily" => timestamp.format("%F").to_string(),
+        "weekly" => {
+            let week = timestamp.iso_week();
+            format!("{:04}-W{:02}", week.year(), week.week())
+        }
+        _ => timestamp.format("%Y-%m").to_string(),
+    }
 }
 
 #[derive(Default)]
@@ -1178,8 +1940,13 @@ fn app_builder() -> tauri::Builder<tauri::Wry> {
     tauri::Builder::default().invoke_handler(tauri::generate_handler![
         get_battery_dashboard,
         get_recent_battery_history,
+        get_battery_health,
+        get_battery_anomalies,
+        get_power_profile,
+        set_power_profile,
         get_battery_session_history,
         rebuild_battery_session_history,
+        export_battery_history,
         get_recorder_status,
         set_recorder_enabled
     ])
@@ -1193,10 +1960,27 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::app_builder;
+    use super::{ExportRequest, app_builder, export_battery_history};
 
     #[test]
     fn desktop_builder_can_be_created_without_hardware_access() {
         let _builder = app_builder();
+    }
+
+    #[test]
+    fn export_command_requires_an_absolute_user_destination() {
+        let response = export_battery_history(ExportRequest {
+            data_type: "raw-samples".to_owned(),
+            format: "csv".to_owned(),
+            destination: "history.csv".to_owned(),
+            battery_id: None,
+            start_date: None,
+            end_date: None,
+            timezone: None,
+            summary_period: None,
+        });
+        assert_eq!(response.availability, "unavailable");
+        assert_eq!(response.unavailable_reason, Some("invalid-request"));
+        assert!(response.error.is_some());
     }
 }

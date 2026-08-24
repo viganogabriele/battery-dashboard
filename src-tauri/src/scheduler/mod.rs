@@ -49,11 +49,40 @@ pub fn render_recorder_service(recorder_path: &str) -> Result<String, TemplateEr
         return Err(TemplateError::InvalidRecorderPath);
     }
 
-    let escaped_path = recorder_path.replace('\\', "\\\\").replace('"', "\\\"");
+    let escaped_path = escape_systemd_value(recorder_path);
     Ok(
         RECORDER_SERVICE_TEMPLATE
             .replace(RECORDER_PATH_PLACEHOLDER, &format!("\"{escaped_path}\"")),
     )
+}
+
+/// Renders the recorder service and pins its data directory to the same XDG
+/// location used while staging the executable.
+///
+/// A graphical process and the per-user systemd manager do not necessarily
+/// have identical imported environments. In particular, a custom
+/// `XDG_DATA_HOME` can otherwise make the timer write a different database
+/// from the one the desktop reads. The installer uses this variant so a
+/// successful enable always writes to the path it just staged.
+///
+/// # Errors
+///
+/// Returns [`TemplateError::InvalidRecorderPath`] when either path is not a
+/// safe absolute path.
+pub fn render_recorder_service_with_data_home(
+    recorder_path: &str,
+    data_home: &str,
+) -> Result<String, TemplateError> {
+    if !is_safe_absolute_path(recorder_path) || !is_safe_absolute_path(data_home) {
+        return Err(TemplateError::InvalidRecorderPath);
+    }
+
+    let rendered = render_recorder_service(recorder_path)?;
+    let environment = format!(
+        "Environment=XDG_DATA_HOME=\"{}\"\n",
+        escape_systemd_value(data_home)
+    );
+    Ok(rendered.replacen("ExecStart=", &format!("{environment}ExecStart="), 1))
 }
 
 /// The observable state of the systemd user scheduler.
@@ -61,7 +90,8 @@ pub fn render_recorder_service(recorder_path: &str) -> Result<String, TemplateEr
 pub enum SchedulerStatus {
     /// The timer is installed and enabled for the current user.
     Enabled,
-    /// The timer is available but not enabled for the current user.
+    /// The timer is not enabled for the current user. This also covers the
+    /// normal first-run state where the opt-in unit has not been staged yet.
     Disabled,
     /// `systemctl --user` could not determine the timer state.
     Unavailable {
@@ -230,7 +260,8 @@ impl<R: CommandRunner> SystemdUserScheduler<R> {
 
     /// Stops and disables the timer while preserving recorder data and files.
     ///
-    /// This is an explicit user action. It does not delete the `SQLite` database.
+    /// This is an explicit user action. It does not delete the `SQLite` database
+    /// and is idempotent when the opt-in unit has not been staged yet.
     ///
     /// # Errors
     ///
@@ -238,7 +269,7 @@ impl<R: CommandRunner> SystemdUserScheduler<R> {
     /// a `systemctl` invocation fails, or the disabled state cannot be verified.
     pub fn disable(&self) -> Result<(), SchedulerError> {
         self.require_available()?;
-        self.run_checked(&["--user", "disable", "--now", RECORDER_TIMER_UNIT])?;
+        self.run_checked_allow_missing(&["--user", "disable", "--now", RECORDER_TIMER_UNIT])?;
         self.expect_status(&SchedulerStatus::Disabled)
     }
 
@@ -276,22 +307,72 @@ impl<R: CommandRunner> SystemdUserScheduler<R> {
         }
     }
 
+    fn run_checked_allow_missing(&self, args: &[&str]) -> Result<(), SchedulerError> {
+        let output = self
+            .run(args)
+            .map_err(|error| SchedulerError::CommandFailed {
+                command: command_label(args),
+                detail: error.to_string(),
+            })?;
+
+        if output.status == Some(0) || is_missing_unit_result(&output) {
+            Ok(())
+        } else {
+            Err(SchedulerError::CommandFailed {
+                command: command_label(args),
+                detail: command_detail(&output),
+            })
+        }
+    }
+
     fn run(&self, args: &[&str]) -> Result<CommandOutput, CommandError> {
         self.runner.run("systemctl", args)
     }
 }
 
 fn is_disabled_unit_result(output: &CommandOutput) -> bool {
-    if output.status != Some(1) || !output.stderr.trim().is_empty() {
+    if !matches!(output.status, Some(1 | 4)) {
         return false;
     }
 
     let state = output.stdout.trim();
-    state.is_empty()
-        || matches!(
-            state,
-            "disabled" | "static" | "indirect" | "generated" | "transient"
+    if state.is_empty() && output.stderr.trim().is_empty() {
+        return true;
+    }
+    if state == "not-found" && output.stderr.trim().is_empty() {
+        return true;
+    }
+
+    // `is-enabled` reports a unit that has not been staged yet as a failed
+    // lookup. That is a normal, supported *disabled* state for this opt-in
+    // feature, not evidence that the user manager is unavailable. Keep actual
+    // bus/permission failures unavailable by recognizing only lookup wording.
+    is_missing_unit_result(output)
+        || (output.stderr.trim().is_empty()
+            && matches!(
+                state,
+                "disabled" | "static" | "indirect" | "generated" | "transient" | "masked"
+            ))
+}
+
+fn is_missing_unit_result(output: &CommandOutput) -> bool {
+    matches!(output.status, Some(1 | 4))
+        && is_missing_unit_detail(
+            &format!("{} {}", output.stdout, output.stderr).to_ascii_lowercase(),
         )
+}
+
+fn is_missing_unit_detail(detail: &str) -> bool {
+    detail.contains("unit")
+        && (detail.contains("not found")
+            || detail.contains("not-found")
+            || detail.contains("could not be found")
+            || detail.contains("no such file or directory")
+            || detail.contains("does not exist"))
+}
+
+fn escape_systemd_value(value: &str) -> String {
+    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn command_detail(output: &CommandOutput) -> String {
@@ -327,6 +408,7 @@ mod tests {
         CommandError, CommandOutput, CommandRunner, RECORDER_PATH_PLACEHOLDER,
         RECORDER_SERVICE_TEMPLATE, RECORDER_TIMER_TEMPLATE, RECORDER_TIMER_UNIT, SchedulerError,
         SchedulerStatus, SystemdUserScheduler, TemplateError, render_recorder_service,
+        render_recorder_service_with_data_home,
     };
 
     #[derive(Default)]
@@ -384,6 +466,28 @@ mod tests {
         let scheduler = SystemdUserScheduler::new(FakeRunner::with_responses([Ok(output(
             1,
             "disabled\n",
+            "",
+        ))]));
+
+        assert_eq!(scheduler.status(), SchedulerStatus::Disabled);
+    }
+
+    #[test]
+    fn status_reports_disabled_when_timer_has_not_been_staged() {
+        let scheduler = SystemdUserScheduler::new(FakeRunner::with_responses([Ok(output(
+            1,
+            "",
+            "Failed to get unit file state for battery-dashboard-recorder.timer: No such file or directory\n",
+        ))]));
+
+        assert_eq!(scheduler.status(), SchedulerStatus::Disabled);
+    }
+
+    #[test]
+    fn status_accepts_systemd_not_found_exit_code_for_first_run() {
+        let scheduler = SystemdUserScheduler::new(FakeRunner::with_responses([Ok(output(
+            4,
+            "not-found\n",
             "",
         ))]));
 
@@ -500,6 +604,24 @@ mod tests {
     }
 
     #[test]
+    fn disable_is_idempotent_before_the_opt_in_units_are_staged() {
+        let missing = || {
+            Ok(output(
+                1,
+                "",
+                "Unit battery-dashboard-recorder.timer could not be found.\n",
+            ))
+        };
+        let scheduler = SystemdUserScheduler::new(FakeRunner::with_responses([
+            missing(),
+            missing(),
+            missing(),
+        ]));
+
+        assert_eq!(scheduler.disable(), Ok(()));
+    }
+
+    #[test]
     fn enable_does_not_mutate_state_when_systemd_is_unavailable() {
         let runner = FakeRunner::with_responses([Err(CommandError::new("systemctl not found"))]);
         let scheduler = SystemdUserScheduler::new(runner);
@@ -538,6 +660,17 @@ mod tests {
             render_recorder_service("/home/example/recorder\nExecStart=/unexpected"),
             Err(TemplateError::InvalidRecorderPath)
         );
+    }
+
+    #[test]
+    fn service_template_can_pin_the_database_data_home() {
+        let rendered = render_recorder_service_with_data_home(
+            "/home/example/recorder",
+            "/home/example/.local/share",
+        )
+        .expect("absolute paths are valid");
+        assert!(rendered.contains("Environment=XDG_DATA_HOME=\"/home/example/.local/share\""));
+        assert!(rendered.contains("ExecStart=\"/home/example/recorder\""));
     }
 
     #[test]

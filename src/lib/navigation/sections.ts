@@ -11,6 +11,11 @@ export const productSections = [
     description: 'Current battery status and recent activity.',
   },
   {
+    id: 'chart',
+    label: 'Live chart',
+    description: 'Charge percentage and recorded gaps over time.',
+  },
+  {
     id: 'sessions',
     label: 'Sessions',
     description: 'Charging and discharging sessions.',
@@ -24,6 +29,16 @@ export const productSections = [
     id: 'health',
     label: 'Health',
     description: 'Battery capacity, cycles, and degradation.',
+  },
+  {
+    id: 'insights',
+    label: 'Insights',
+    description: 'Evidence-backed unusual battery behaviour.',
+  },
+  {
+    id: 'export',
+    label: 'Export',
+    description: 'Export local samples, sessions, or summaries.',
   },
   {
     id: 'settings',

@@ -4,14 +4,25 @@
 
   import BatterySelector from './lib/components/BatterySelector.svelte';
   import BatteryStateBadge from './lib/components/BatteryStateBadge.svelte';
+  import CalendarHistoryView from './lib/components/CalendarHistoryView.svelte';
   import EmptyState from './lib/components/EmptyState.svelte';
+  import ExportControls, {
+    type ExportRequest,
+  } from './lib/components/ExportControls.svelte';
+  import HealthView from './lib/components/HealthView.svelte';
+  import InsightsView, {
+    type AnomalyReport,
+  } from './lib/components/InsightsView.svelte';
   import MetricCard from './lib/components/MetricCard.svelte';
+  import PowerProfileControls, {
+    type PowerProfile,
+    type PowerProfileState,
+  } from './lib/components/PowerProfileControls.svelte';
   import RecentHistoryChart, {
     type RecentHistoryRecorderState,
   } from './lib/components/RecentHistoryChart.svelte';
   import RecorderSettings from './lib/components/RecorderSettings.svelte';
   import SessionsView from './lib/components/SessionsView.svelte';
-  import CalendarHistoryView from './lib/components/CalendarHistoryView.svelte';
   import { isMetricAvailable, type Metric } from './lib/domain/battery';
   import SectionNavigation from './lib/navigation/SectionNavigation.svelte';
   import {
@@ -32,9 +43,57 @@
   } from './lib/services/recent-history-client';
   import {
     createDesktopSessionHistoryClient,
-    type CalendarSummaryPeriod,
     type BatterySessionHistoryData,
+    type CalendarSummaryPeriod,
   } from './lib/services/session-history-client';
+
+  type BatteryHealthResponseDto = {
+    schemaVersion: 1;
+    availability: 'available' | 'unavailable';
+    unavailableReason: string | null;
+    source: 'sqlite' | 'unavailable';
+    batteryId: string | null;
+    currentFullCapacityWh: number | null;
+    currentFullCapacityRecordedAt: string | null;
+    designCapacityWh: number | null;
+    designCapacityRecordedAt: string | null;
+    healthPercentage: number | null;
+    healthRecordedAt: string | null;
+    hardwareCycleCount: number | null;
+    hardwareCycleCountRecordedAt: string | null;
+    capacityHistory: readonly {
+      recordedAt: string;
+      fullCapacityWh: number;
+    }[];
+    trend: 'stable' | 'degrading' | 'noisy' | 'insufficient';
+    trendSlopeWhPerDay: number | null;
+    trendUpperConfidenceWhPerDay: number | null;
+    trendInsufficiencyReason: string | null;
+  };
+
+  type ExportResponseDto = {
+    schemaVersion: 1;
+    availability: 'available' | 'unavailable';
+    unavailableReason: string | null;
+    dataType: string;
+    format: string;
+    destination: string | null;
+    recordCount: number;
+    bytesWritten: number | null;
+    error: string | null;
+  };
+
+  type AnomalyResponseDto = AnomalyReport & {
+    schemaVersion: 1;
+    source: 'sqlite' | 'unavailable';
+    batteryId: string | null;
+  };
+
+  type PowerProfileResponseDto = PowerProfileState & {
+    schemaVersion: 1;
+    requestedProfile: PowerProfile | null;
+    changed: boolean;
+  };
 
   let activeSection = $state<ProductSection>(defaultProductSection);
   let selectedBatteryId = $state('all-batteries');
@@ -57,6 +116,17 @@
   let calendarPeriod = $state<CalendarSummaryPeriod>('daily');
   let sessionStartDate = $state('');
   let sessionEndDate = $state('');
+  let exportSelection = $state<ExportRequest | null>(null);
+  let exportResult = $state<ExportResponseDto | null>(null);
+  let isExporting = $state(false);
+  let batteryHealth = $state<BatteryHealthResponseDto | null>(null);
+  let isRefreshingHealth = $state(false);
+  let anomalyReport = $state<AnomalyResponseDto | null>(null);
+  let anomalyRangeHours = $state<24 | 168 | 720>(24);
+  let isRefreshingAnomalies = $state(false);
+  let powerProfile = $state<PowerProfileResponseDto | null>(null);
+  let isRefreshingPowerProfile = $state(false);
+  let isChangingPowerProfile = $state(false);
 
   let batteries = $derived(liveDashboard?.batteries ?? []);
   let aggregate = $derived(liveDashboard?.aggregate ?? null);
@@ -94,7 +164,7 @@
       .map((gap) => ({
         start: gap.startsAt,
         end: gap.endsAt ?? gap.startsAt,
-        reason: gap.reason.replace('-', ' '),
+        reason: gap.reason.replaceAll('-', ' '),
       })) ?? [],
   );
   let recentHistorySummary = $derived(
@@ -114,16 +184,72 @@
     return 'enabled';
   });
 
+  const quickLinks: readonly {
+    section: ProductSection;
+    label: string;
+    description: string;
+  }[] = [
+    {
+      section: 'chart',
+      label: 'Live chart',
+      description: 'Trace charge and gaps over time.',
+    },
+    {
+      section: 'sessions',
+      label: 'Sessions',
+      description: 'Review charging and on-battery runs.',
+    },
+    {
+      section: 'history',
+      label: 'History',
+      description: 'Compare daily, weekly, and monthly records.',
+    },
+    {
+      section: 'health',
+      label: 'Health',
+      description: 'Check capacity, cycles, and wear signals.',
+    },
+    {
+      section: 'insights',
+      label: 'Insights',
+      description: 'Review evidence-backed unusual battery behaviour.',
+    },
+    {
+      section: 'export',
+      label: 'Export',
+      description: 'Choose a local data set and file format.',
+    },
+    {
+      section: 'settings',
+      label: 'Settings',
+      description: 'Control opt-in background recording.',
+    },
+  ];
+
   function selectBattery(id: string) {
     selectedBatteryId = id;
     if (isLiveData) void refreshRecentHistory(id);
     if (isLiveData) void refreshSessionHistory(id);
+    if (isLiveData && activeSection === 'health') void refreshBatteryHealth(id);
+    if (isLiveData && activeSection === 'insights') void refreshAnomalies(id);
   }
 
   function selectSection(section: ProductSection) {
     activeSection = section;
     if (isLiveData && (section === 'sessions' || section === 'history')) {
       void refreshSessionHistory();
+    }
+    if (isLiveData && (section === 'dashboard' || section === 'chart')) {
+      void refreshRecentHistory();
+    }
+    if (isLiveData && section === 'health') {
+      void refreshBatteryHealth();
+    }
+    if (isLiveData && section === 'insights') {
+      void refreshAnomalies();
+    }
+    if (isNativeRuntime && section === 'settings') {
+      void refreshPowerProfile();
     }
   }
 
@@ -155,6 +281,7 @@
   function timezone(): string {
     return Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
   }
+
   async function refreshSessionHistory(batteryId = selectedBatteryId) {
     if (isRefreshingSessions) return;
     isRefreshingSessions = true;
@@ -172,9 +299,11 @@
       isRefreshingSessions = false;
     }
   }
+
   function refreshSessionFilters() {
     if (isLiveData) void refreshSessionHistory();
   }
+
   async function rebuildSessions() {
     if (isRebuildingSessions) return;
     isRebuildingSessions = true;
@@ -218,11 +347,14 @@
         : suggestedBatteryId;
       await refreshRecentHistory(selectedBatteryId);
       await refreshSessionHistory(selectedBatteryId);
+      if (activeSection === 'health') await refreshBatteryHealth(selectedBatteryId);
+      if (activeSection === 'insights') await refreshAnomalies(selectedBatteryId);
     } catch (error) {
       // Native failures must stay visible: fixtures belong only to browser preview.
       liveDashboard = null;
       recentHistory = null;
       sessionHistory = null;
+      batteryHealth = null;
       liveDataError = `Could not read local battery data: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
       isRefreshingLiveData = false;
@@ -246,6 +378,75 @@
     }
   }
 
+  async function refreshBatteryHealth(batteryId = selectedBatteryId) {
+    if (isRefreshingHealth || !isNativeRuntime) return;
+
+    isRefreshingHealth = true;
+    batteryHealth = null;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      batteryHealth = await invoke<BatteryHealthResponseDto>('get_battery_health', {
+        batteryId: batteryId === 'all-batteries' ? null : batteryId,
+      });
+    } catch {
+      batteryHealth = null;
+    } finally {
+      isRefreshingHealth = false;
+    }
+  }
+
+  async function refreshAnomalies(batteryId = selectedBatteryId) {
+    if (isRefreshingAnomalies || !isNativeRuntime) return;
+
+    isRefreshingAnomalies = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      anomalyReport = await invoke<AnomalyResponseDto>('get_battery_anomalies', {
+        batteryId: batteryId === 'all-batteries' ? null : batteryId,
+        rangeHours: anomalyRangeHours,
+      });
+    } catch {
+      anomalyReport = null;
+    } finally {
+      isRefreshingAnomalies = false;
+    }
+  }
+
+  function selectAnomalyRange(rangeHours: 24 | 168 | 720) {
+    anomalyRangeHours = rangeHours;
+    void refreshAnomalies();
+  }
+
+  async function refreshPowerProfile() {
+    if (isRefreshingPowerProfile || !isNativeRuntime) return;
+
+    isRefreshingPowerProfile = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      powerProfile = await invoke<PowerProfileResponseDto>('get_power_profile');
+    } catch {
+      powerProfile = null;
+    } finally {
+      isRefreshingPowerProfile = false;
+    }
+  }
+
+  async function setPowerProfile(profile: PowerProfile) {
+    if (isChangingPowerProfile || !isNativeRuntime) return;
+
+    isChangingPowerProfile = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      powerProfile = await invoke<PowerProfileResponseDto>('set_power_profile', {
+        profile,
+      });
+    } catch {
+      powerProfile = null;
+    } finally {
+      isChangingPowerProfile = false;
+    }
+  }
+
   onMount(() => {
     isNativeRuntime = '__TAURI_INTERNALS__' in window;
     void refreshLiveData();
@@ -253,6 +454,42 @@
 
     return () => window.clearInterval(refreshInterval);
   });
+
+  async function handleExport(request: ExportRequest) {
+    exportSelection = request;
+    exportResult = null;
+    if (!isNativeRuntime) return;
+    if (!request.destination) return;
+    if (isExporting) return;
+
+    isExporting = true;
+    try {
+      const { invoke } = await import('@tauri-apps/api/core');
+      exportResult = await invoke<ExportResponseDto>('export_battery_history', {
+        request: {
+          dataType: request.dataType,
+          format: request.format,
+          destination: request.destination,
+          batteryId: selectedBatteryId === 'all-batteries' ? null : selectedBatteryId,
+          timezone: timezone(),
+        },
+      });
+    } catch (error) {
+      exportResult = {
+        schemaVersion: 1,
+        availability: 'unavailable',
+        unavailableReason: 'command-failed',
+        dataType: request.dataType,
+        format: request.format,
+        destination: request.destination,
+        recordCount: 0,
+        bytesWritten: null,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    } finally {
+      isExporting = false;
+    }
+  }
 
   function formatNumber(value: number, digits = 1, sign = false): string {
     return new Intl.NumberFormat(undefined, {
@@ -309,20 +546,28 @@
 <main class="dashboard-app">
   <aside class="sidebar">
     <div class="brand">
-      <p class="eyebrow">Local-first Linux utility</p>
-      <p class="brand__name">Battery Dashboard</p>
-      <p class="brand__detail">
-        {isNativeRuntime ? 'Native local dashboard' : 'Desktop app required'}
-      </p>
+      <div class="brand__mark" aria-hidden="true">⌁</div>
+      <div>
+        <p class="brand__name">Battery Dashboard</p>
+        <p class="brand__detail">
+          {isNativeRuntime ? 'Local desktop' : 'Desktop app required'}
+        </p>
+      </div>
     </div>
 
     <SectionNavigation selectedSection={activeSection} onSelect={selectSection} />
 
-    <p class="sidebar__note">
-      {isLiveData
-        ? 'Live data and recorder controls stay local to this device.'
-        : 'This dashboard never substitutes simulated readings for local battery data.'}
-    </p>
+    <div class="sidebar__footer">
+      <span class:status-pill--live={isLiveData} class="status-pill" role="status">
+        <span class="status-pill__dot" aria-hidden="true"></span>
+        {isLiveData
+          ? 'Live data'
+          : isNativeRuntime
+            ? 'Waiting for battery'
+            : 'Desktop only'}
+      </span>
+      <p class="sidebar__version">Local data stays on this device.</p>
+    </div>
   </aside>
 
   <section class="page-content" aria-labelledby="page-title">
@@ -332,7 +577,17 @@
         <h1 id="page-title">{selectedSectionInfo.label}</h1>
         <p class="page-header__description">{selectedSectionInfo.description}</p>
       </div>
-      <span class="preview-badge">{isLiveData ? 'Live data' : 'Unavailable'}</span>
+      <div class="page-header__status" aria-live="polite">
+        {#if isRefreshingLiveData}
+          <span class="status-chip status-chip--pending">Refreshing</span>
+        {:else if isLiveData}
+          <span class="status-chip status-chip--live">Live</span>
+        {:else if isNativeRuntime}
+          <span class="status-chip">No battery</span>
+        {:else}
+          <span class="status-chip">Desktop only</span>
+        {/if}
+      </div>
     </header>
 
     {#if activeSection === 'dashboard'}
@@ -356,15 +611,18 @@
                 aria-label={`Battery charge: ${formatMetric(selectedSnapshot.percentage, '%', 0)}`}
               ></meter>
             {:else}
-              <p class="charge-unavailable">Charge percentage is unavailable.</p>
+              <p class="charge-unavailable">Charge percentage is not exposed.</p>
             {/if}
             <p class="sample-time">
-              Sample: {formatTimestamp(selectedSnapshot.updatedAt)}
+              Updated {formatTimestamp(selectedSnapshot.updatedAt)}
             </p>
           </div>
 
           <div class="dashboard-hero__state">
-            <BatteryStateBadge state={selectedSnapshot.state} />
+            <div class="hero-state__heading">
+              <span class="eyebrow">Power state</span>
+              <BatteryStateBadge state={selectedSnapshot.state} />
+            </div>
             {#if batteryOptions.length > 1}
               <BatterySelector
                 batteries={batteryOptions}
@@ -372,22 +630,34 @@
                 onSelect={selectBattery}
               />
             {/if}
-            <p>
-              {isLiveData
-                ? 'Read locally from available Linux battery providers. Each metric names its source.'
-                : 'Local battery data is shown only when a provider reports it.'}
+            <p class="hero-state__source">
+              Read from Linux battery providers. Metrics stay unavailable when the
+              provider does not expose them.
             </p>
           </div>
         </section>
 
         {#if selectedSnapshot.percentage.availability === 'stale'}
-          <aside class="data-notice" aria-label="Stale sample warning">
-            <strong>Last sample may be outdated.</strong>
-            The provider marked this battery reading as stale; history keeps gaps visible.
+          <aside class="sample-warning" aria-label="Stale sample warning">
+            <strong>Sample may be outdated.</strong>
+            The provider marked this reading stale after a delayed update or resume.
           </aside>
         {/if}
 
-        {#if isLiveData}
+        <section class="dashboard-section" aria-labelledby="dashboard-chart-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Recent activity</p>
+              <h2 id="dashboard-chart-title">Live charge chart</h2>
+            </div>
+            <button
+              class="text-button"
+              type="button"
+              onclick={() => selectSection('chart')}
+            >
+              Open full chart <span aria-hidden="true">→</span>
+            </button>
+          </div>
           <RecentHistoryChart
             points={recentHistoryPoints}
             gaps={recentHistoryGaps}
@@ -397,25 +667,29 @@
             selectedRange={historyRange}
             onRangeChange={selectHistoryRange}
           />
-        {/if}
+        </section>
 
-        <section class="dashboard-actions" aria-label="Battery records">
-          <button type="button" onclick={() => selectSection('sessions')}>
-            <strong>Sessions</strong>
-            <span>Charging and on-battery time, with incomplete runs kept visible.</span
-            >
-          </button>
-          <button type="button" onclick={() => selectSection('history')}>
-            <strong>History</strong>
-            <span
-              >Daily, weekly, and monthly local summaries — including today and
-              yesterday.</span
-            >
-          </button>
-          <button type="button" onclick={() => selectSection('settings')}>
-            <strong>Recording</strong>
-            <span>Enable the local timer once to start collecting future history.</span>
-          </button>
+        <section class="quick-links" aria-labelledby="quick-links-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Workspace</p>
+              <h2 id="quick-links-title">Battery records</h2>
+            </div>
+          </div>
+          <div class="quick-links__grid">
+            {#each quickLinks as link (link.section)}
+              <button
+                class="quick-link"
+                type="button"
+                onclick={() => selectSection(link.section)}
+                aria-label={`${link.label}: ${link.description}`}
+              >
+                <span class="quick-link__label">{link.label}</span>
+                <span class="quick-link__description">{link.description}</span>
+                <span class="quick-link__arrow" aria-hidden="true">↗</span>
+              </button>
+            {/each}
+          </div>
         </section>
 
         <section class="metric-grid" aria-label="Battery metrics">
@@ -463,14 +737,41 @@
       {:else}
         <EmptyState
           title={isNativeRuntime
-            ? 'Local battery data unavailable'
+            ? 'No Linux battery detected'
             : 'Open the desktop application'}
           message={isNativeRuntime
-            ? (liveDataError ?? 'Waiting for local battery providers.')
-            : 'This browser page cannot access UPower, sysfs, or your local SQLite history.'}
+            ? (liveDataError ??
+              'UPower and sysfs did not return a battery for this device.')
+            : 'A browser tab cannot read UPower, sysfs, or local SQLite history.'}
           hint={isNativeRuntime
-            ? 'Check that UPower is running and that Linux exposes a battery under /sys/class/power_supply.'
-            : 'Run pnpm tauri dev from the project directory to see real local readings.'}
+            ? 'Connect a supported battery or check that Linux exposes one under /sys/class/power_supply.'
+            : 'Run the Battery Dashboard desktop application to view real local readings.'}
+        />
+      {/if}
+    {:else if activeSection === 'chart'}
+      {#if isLiveData}
+        <section class="focus-section" aria-label="Live charge history">
+          <RecentHistoryChart
+            points={recentHistoryPoints}
+            gaps={recentHistoryGaps}
+            summary={recentHistorySummary}
+            loading={isRefreshingHistory}
+            recorderState={recentHistoryRecorderState}
+            selectedRange={historyRange}
+            onRangeChange={selectHistoryRange}
+          />
+        </section>
+      {:else}
+        <EmptyState
+          title={isNativeRuntime
+            ? 'Live chart is waiting for a battery'
+            : 'Open the desktop app for the live chart'}
+          message={isNativeRuntime
+            ? (liveDataError ?? 'No current battery provider is reporting chart data.')
+            : 'The chart is built from local readings and is not available in a browser tab.'}
+          hint={isNativeRuntime
+            ? 'Enable recording in Settings to keep persistent readings between sessions.'
+            : 'Launch the desktop application to read local battery history.'}
         />
       {/if}
     {:else if activeSection === 'sessions'}
@@ -584,17 +885,116 @@
           refreshSessionFilters();
         }}
       />
+    {:else if activeSection === 'health'}
+      {#if isLiveData && selectedSnapshot}
+        {#if batteryHealth?.availability === 'unavailable'}
+          <EmptyState
+            title={batteryHealth.unavailableReason === 'multiple-batteries'
+              ? 'Select one battery for health'
+              : 'No recorded health history'}
+            message={batteryHealth.unavailableReason === 'multiple-batteries'
+              ? 'Health analysis keeps capacity values separate for each physical battery.'
+              : 'Health reports use recorded full-capacity and design-capacity samples only.'}
+            hint={batteryHealth.unavailableReason === 'recorder-disabled'
+              ? 'Enable recording in Settings, then return after a few samples are collected.'
+              : 'Enable recording in Settings to build a local capacity history.'}
+          />
+        {:else}
+          <HealthView
+            currentFullCapacityWh={batteryHealth?.availability === 'available'
+              ? batteryHealth.currentFullCapacityWh
+              : isMetricAvailable(selectedSnapshot.energyFullWh)
+                ? selectedSnapshot.energyFullWh.value
+                : null}
+            designCapacityWh={batteryHealth?.availability === 'available'
+              ? batteryHealth.designCapacityWh
+              : isMetricAvailable(selectedSnapshot.energyDesignWh)
+                ? selectedSnapshot.energyDesignWh.value
+                : null}
+            hardwareCycleCount={batteryHealth?.availability === 'available'
+              ? batteryHealth.hardwareCycleCount
+              : isMetricAvailable(selectedSnapshot.cycleCount)
+                ? selectedSnapshot.cycleCount.value
+                : null}
+            capacityHistory={batteryHealth?.availability === 'available'
+              ? batteryHealth.capacityHistory.map((point) => ({
+                  timestamp: point.recordedAt,
+                  fullCapacityWh: point.fullCapacityWh,
+                }))
+              : []}
+            trend={batteryHealth?.availability === 'available'
+              ? batteryHealth.trend
+              : 'insufficient'}
+          />
+        {/if}
+      {:else}
+        <EmptyState
+          title={isNativeRuntime
+            ? 'Battery health needs a local battery'
+            : 'Open the desktop app for health'}
+          message={isNativeRuntime
+            ? (liveDataError ??
+              'Capacity and cycle values are unavailable without a battery provider.')
+            : 'Health calculations use local capacity and cycle readings from the desktop app.'}
+          hint={isNativeRuntime
+            ? 'Select a physical battery from the dashboard when Linux exposes one.'
+            : 'Launch the desktop application to inspect capacity and wear data.'}
+        />
+      {/if}
+    {:else if activeSection === 'insights'}
+      <InsightsView
+        report={anomalyReport}
+        loading={isRefreshingAnomalies}
+        rangeHours={anomalyRangeHours}
+        onRangeChange={selectAnomalyRange}
+        onRefresh={() => void refreshAnomalies()}
+      />
+    {:else if activeSection === 'export'}
+      <section class="focus-section" aria-label="Export local battery data">
+        <ExportControls onExport={handleExport} />
+        {#if isExporting}
+          <p class="action-feedback" role="status">
+            Writing the selected local history…
+          </p>
+        {:else if exportResult}
+          <p
+            class:action-feedback--error={exportResult.availability !== 'available'}
+            class="action-feedback"
+            role="status"
+          >
+            {#if exportResult.availability === 'available'}
+              Wrote {exportResult.recordCount}
+              {exportResult.dataType.replaceAll('-', ' ')}
+              {exportResult.format.toUpperCase()} record{exportResult.recordCount === 1
+                ? ''
+                : 's'}
+              to {exportResult.destination}.
+            {:else}
+              Export could not be written: {exportResult.error ??
+                exportResult.unavailableReason ??
+                'unknown error'}
+            {/if}
+          </p>
+        {:else if exportSelection && !isNativeRuntime}
+          <p class="action-feedback" role="status">
+            Export is available only in the desktop application, where local history can
+            be written to the path you choose.
+          </p>
+        {:else if exportSelection && !exportSelection.destination}
+          <p class="action-feedback" role="status">
+            Enter an absolute destination path before exporting.
+          </p>
+        {/if}
+      </section>
     {:else if activeSection === 'settings'}
       <section class="settings-panel">
         <RecorderSettings client={recorderClient} />
-      </section>
-    {:else}
-      <section class="planned-panel">
-        <p class="eyebrow">Planned screen</p>
-        <EmptyState
-          title={`${selectedSectionInfo.label} arrives in a later phase`}
-          message={selectedSectionInfo.description}
-          hint="The navigation is active now so the dashboard structure can be tested before real data is connected."
+        <PowerProfileControls
+          state={powerProfile}
+          loading={isRefreshingPowerProfile}
+          changing={isChangingPowerProfile}
+          onRefresh={() => void refreshPowerProfile()}
+          onSelect={setPowerProfile}
         />
       </section>
     {/if}

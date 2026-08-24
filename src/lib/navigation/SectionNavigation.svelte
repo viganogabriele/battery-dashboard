@@ -15,16 +15,21 @@
   }: Props = $props();
 </script>
 
-<nav aria-label={label}>
+<nav class="section-navigation" aria-label={label}>
   <ul>
-    {#each productSections as section (section.id)}
+    {#each productSections as section, index (section.id)}
       <li>
         <button
           type="button"
           aria-current={selectedSection === section.id ? 'page' : undefined}
           aria-label={`${section.label}: ${section.description}`}
+          title={section.description}
+          data-section={section.id}
           onclick={() => onSelect(section.id)}
         >
+          <span class="section-navigation__index" aria-hidden="true"
+            >{String(index + 1).padStart(2, '0')}</span
+          >
           {section.label}
         </button>
       </li>

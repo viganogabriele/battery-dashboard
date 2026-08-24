@@ -9,6 +9,8 @@ import MetricCard from './MetricCard.svelte';
 import RecorderSettings from './RecorderSettings.svelte';
 import RecentHistoryChart from './RecentHistoryChart.svelte';
 import CalendarHistoryView from './CalendarHistoryView.svelte';
+import ExportControls from './ExportControls.svelte';
+import HealthView from './HealthView.svelte';
 import SessionsView from './SessionsView.svelte';
 
 describe('battery dashboard presentation components', () => {
@@ -251,5 +253,57 @@ describe('battery dashboard presentation components', () => {
 
     expect(screen.getByText(/Session history is unavailable/)).toBeTruthy();
     expect(screen.getByText(/Calendar history is unavailable/)).toBeTruthy();
+  });
+
+  it('shows calculable health, a supported cycle count, and a stable capacity trend', () => {
+    render(HealthView, {
+      currentFullCapacityWh: 45,
+      designCapacityWh: 50,
+      hardwareCycleCount: 120,
+      trend: 'stable',
+      capacityHistory: [
+        { timestamp: '2026-01-01T09:00:00Z', fullCapacityWh: 45.2 },
+        { timestamp: '2026-02-01T09:00:00Z', fullCapacityWh: 45 },
+      ],
+    });
+
+    expect(screen.getByText('90.0%')).toBeTruthy();
+    expect(screen.getByText('120')).toBeTruthy();
+    expect(screen.getByText('Stable capacity')).toBeTruthy();
+    expect(
+      screen.getByRole('img', { name: /Capacity history with 2 recorded readings/ }),
+    ).toBeTruthy();
+  });
+
+  it('keeps unavailable health and unsupported cycles distinct, with explicit inconclusive states', () => {
+    render(HealthView, { trend: 'noisy' });
+    render(HealthView, { id: 'health-insufficient', trend: 'insufficient' });
+    render(HealthView, { id: 'health-degrading', trend: 'degrading' });
+
+    expect(screen.getAllByText('Unavailable')).toHaveLength(9);
+    expect(screen.getAllByText('Not supported by this battery')).toHaveLength(3);
+    expect(screen.getByText('Trend is noisy')).toBeTruthy();
+    expect(screen.getByText('Insufficient history')).toBeTruthy();
+    expect(screen.getByText('Capacity declining')).toBeTruthy();
+    expect(
+      screen.getAllByText('No recorded capacity history is available.'),
+    ).toHaveLength(3);
+  });
+
+  it('reports the explicitly selected export type and format only after a user action', async () => {
+    const onExport = vi.fn();
+    render(ExportControls, { onExport });
+
+    expect(onExport).not.toHaveBeenCalled();
+    await fireEvent.change(screen.getByLabelText('Export data type'), {
+      target: { value: 'sessions' },
+    });
+    await fireEvent.change(screen.getByLabelText('Export format'), {
+      target: { value: 'json' },
+    });
+    await fireEvent.click(screen.getByRole('button', { name: 'Export' }));
+
+    expect(onExport).toHaveBeenCalledWith({ dataType: 'sessions', format: 'json' });
+    expect(screen.queryByText(/saved to/i)).toBeNull();
   });
 });

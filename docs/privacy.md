@@ -2,17 +2,17 @@
 
 Battery Dashboard is designed as a local-only application.
 
-## What it will store
+## What it stores
 
 When background recording is explicitly enabled, the application stores battery
 observations locally in SQLite. Fields include UTC timestamps, Linux boot ID,
 boot-relative time, battery state, percentage, energy, power, current, voltage,
 temperature, capacity, and hardware cycle count when exposed by the device.
 Each numeric field also stores its `upower`, `sysfs`, `derived`, or
-`unavailable` provenance. It may later store non-sensitive device metadata
-needed to recognise a local battery over time.
+`unavailable` provenance. It does not store raw battery serial numbers in the
+SQLite schema or default exports.
 
-The planned default database location is:
+The default database location is:
 
 ```text
 ${XDG_DATA_HOME:-~/.local/share}/battery-dashboard/battery.sqlite3
@@ -39,15 +39,15 @@ an explicit purge action will be required to delete history.
 
 ## Exports
 
-Future CSV and JSON exports will be written only to a user-selected location.
-They will include the selected measurements, schema metadata, time-zone and
-unit information. Users should treat exported files as local device-usage data
-and share them deliberately.
+CSV and JSON exports are written only after the user supplies an absolute local
+destination path. Existing files are never overwritten. Exports include the
+selected records, schema metadata, time-zone, and unit information; they omit
+raw serial and boot identifiers. Treat exported files as local device-usage
+data and share them deliberately.
 
 ## Current status
 
-During Phase 5, the Tauri command still reads current UPower and sysfs values
-only locally. Background collection happens only after an explicit Settings
-action enables the user timer. The timer is disabled by default; it launches a
-one-shot recorder every 60 seconds and exits. The app has no cloud endpoint,
-telemetry, export, or network service.
+Background collection happens only after an explicit Settings action enables
+the user timer. The timer is disabled by default; it launches a one-shot
+recorder every 60 seconds and exits. The app has no cloud endpoint, telemetry,
+or network service.

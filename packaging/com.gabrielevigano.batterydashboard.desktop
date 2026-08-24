@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=Battery Dashboard
+Comment=Local Linux battery history and health dashboard
+Exec=battery-dashboard
+Icon=battery-dashboard
+Terminal=false
+Categories=Utility;
+StartupNotify=true
+StartupWMClass=battery-dashboard-desktop

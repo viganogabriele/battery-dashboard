@@ -24,7 +24,7 @@
     align-items: flex-start;
     border: 1px dashed var(--color-border-subtle);
     border-radius: var(--radius-card);
-    padding: clamp(1.25rem, 4vw, 2rem);
+    padding: 1.25rem;
     color: var(--color-text-secondary);
     background: color-mix(in srgb, var(--color-surface), transparent 25%);
   }

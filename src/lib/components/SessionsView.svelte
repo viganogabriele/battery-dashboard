@@ -233,7 +233,7 @@
   .sessions-view {
     border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-card);
-    padding: clamp(1rem, 3vw, 1.5rem);
+    padding: 1.25rem;
     background: var(--color-surface);
   }
   .sessions-view__eyebrow,

@@ -12,9 +12,9 @@ KDE, and any particular status bar. Other Linux distributions may work when
 their compatible system components are available, but are not supported until
 tested.
 
-## Current implementation limit
+## Current implementation
 
-Phase 5 reads current physical laptop batteries from UPower and
+The application reads current physical laptop batteries from UPower and
 `/sys/class/power_supply`. It excludes UPower's aggregate display device and
 non-power-supply peripherals, and it discovers sysfs entries by `type=Battery`.
 The UI and recorder are therefore useful with BAT0, BAT1, or differently named
@@ -23,8 +23,8 @@ infer unsupported fields or establish universal hardware compatibility from one
 machine.
 
 An unavailable field remains unavailable. In particular, charge values in Ah
-are not presented as energy values in Wh unless a later phase has a valid,
-explicit conversion rule.
+are not presented as energy values in Wh without a valid, explicit conversion
+rule.
 
 ## Expected sources
 

@@ -31,6 +31,8 @@ pub struct RecordSummary {
 /// A failure while converting a live dashboard response into a stored sample.
 #[derive(Debug)]
 pub enum RecorderError {
+    /// The provider marked the complete dashboard response as stale.
+    StaleDashboard,
     /// The dashboard did not provide an unambiguous UTC collection time.
     InvalidCollectionTimestamp(String),
     /// Linux did not expose a usable boot identifier.
@@ -48,6 +50,8 @@ pub enum RecorderError {
 impl fmt::Display for RecorderError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::StaleDashboard => formatter
+                .write_str("dashboard data was marked stale; no historical sample was persisted"),
             Self::InvalidCollectionTimestamp(value) => {
                 write!(
                     formatter,
@@ -80,7 +84,8 @@ impl Error for RecorderError {
         match self {
             Self::Storage(error) => Some(error),
             Self::Io(error) => Some(error),
-            Self::InvalidCollectionTimestamp(_)
+            Self::StaleDashboard
+            | Self::InvalidCollectionTimestamp(_)
             | Self::InvalidBootId(_)
             | Self::InvalidBootTime(_)
             | Self::InvalidDashboardField(_) => None,
@@ -112,11 +117,15 @@ impl From<std::io::Error> for RecorderError {
 /// Linux boot context cannot be read, or local storage rejects a sample.
 pub async fn record_once() -> Result<RecordSummary, RecorderError> {
     let dashboard = read_dashboard().await;
+    if dashboard.stale {
+        return Err(RecorderError::StaleDashboard);
+    }
     let recorded_at = parse_collection_timestamp(dashboard.collected_at.as_deref())?;
     let boot_context = BootContext::read()?;
     let samples = dashboard
         .batteries
         .iter()
+        .filter(|battery| should_persist_battery_id(&battery.id))
         .map(|battery| to_sample(battery, recorded_at, &boot_context))
         .collect::<Result<Vec<_>, _>>()?;
 
@@ -132,11 +141,28 @@ pub async fn record_once() -> Result<RecordSummary, RecorderError> {
             InsertOutcome::Duplicate => summary.duplicates += 1,
         }
     }
-    if summary.inserted > 0 {
-        storage.rebuild_sessions()?;
-    }
+    // Rebuild even when this invocation only saw duplicates. A database may
+    // have been upgraded from raw samples before the derived session cache was
+    // introduced, and a no-op recorder run must still make that existing real
+    // history visible to session/calendar readers.
+    storage.rebuild_sessions()?;
 
     Ok(summary)
+}
+
+/// Keeps known peripheral battery IDs out of future recorder writes.
+///
+/// The live provider already removes sysfs supplies marked `scope=Device`.
+/// This second guard protects persistence when `UPower` exposes a peripheral
+/// without a corresponding readable sysfs scope file (a common case for HID
+/// devices). It intentionally recognizes only stable, documented peripheral
+/// namespaces; physical laptop IDs remain opaque and are not rejected merely
+/// because they do not start with `BAT`.
+fn should_persist_battery_id(id: &str) -> bool {
+    let normalized = id.trim().to_ascii_lowercase();
+    !normalized.is_empty()
+        && !normalized.starts_with("hidpp_battery_")
+        && !normalized.starts_with("bluetooth_battery_")
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -249,7 +275,8 @@ fn sample_metric(metric: &MetricResponse) -> Result<SampleMetric, RecorderError>
 #[cfg(test)]
 mod tests {
     use super::{
-        RecorderError, parse_boot_id, parse_boot_seconds, parse_collection_timestamp, sample_metric,
+        RecorderError, parse_boot_id, parse_boot_seconds, parse_collection_timestamp,
+        sample_metric, should_persist_battery_id,
     };
     use crate::battery::MetricResponse;
     use crate::storage::MetricSource;
@@ -300,5 +327,14 @@ mod tests {
             sample_metric(&invalid),
             Err(RecorderError::InvalidDashboardField(_))
         ));
+    }
+
+    #[test]
+    fn skips_known_peripheral_battery_names_without_assuming_bat_ids() {
+        assert!(should_persist_battery_id("BAT0"));
+        assert!(should_persist_battery_id("CMB0"));
+        assert!(!should_persist_battery_id("hidpp_battery_0"));
+        assert!(!should_persist_battery_id("bluetooth_battery_1"));
+        assert!(!should_persist_battery_id("  "));
     }
 }
