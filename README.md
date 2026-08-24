@@ -114,6 +114,8 @@ are documented rather than run by the application:
 
 ```sh
 install -Dm755 target/release/battery-dashboard-desktop ~/.local/bin/battery-dashboard
+install -Dm755 target/release/battery-dashboard-recorder \
+  ~/.local/bin/battery-dashboard-recorder
 install -Dm644 src-tauri/icons/icon.png \
   ~/.local/share/icons/hicolor/512x512/apps/battery-dashboard.png
 install -Dm644 packaging/com.gabrielevigano.batterydashboard.desktop \
@@ -128,7 +130,7 @@ copy below the user's XDG data directory and creates user units below the XDG
 config directory; it then uses `systemctl --user` to enable the timer.
 Disabling stops future samples and preserves history.
 
-To remove the app files, remove the three files installed above. To disable the
+To remove the app files, remove the four files installed above. To disable the
 recorder first, use Settings or run `systemctl --user disable --now
 battery-dashboard-recorder.timer`. The database is deliberately retained until
 the user explicitly removes
