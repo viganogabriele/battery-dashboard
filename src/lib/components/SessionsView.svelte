@@ -23,6 +23,8 @@
     completeness: SessionCompleteness;
     gapReason?: SessionGapReason | null;
     durationMinutes?: number | null;
+    startPercentage?: number | null;
+    endPercentage?: number | null;
     percentageChange?: number | null;
     energyChangeWh?: number | null;
     averagePowerWatts?: number | null;
@@ -94,6 +96,47 @@
   function stateLabel(state: SessionState | 'all'): string {
     return state === 'all' ? 'All states' : state[0].toUpperCase() + state.slice(1);
   }
+
+  const hasDuration = (
+    session: BatterySession,
+  ): session is BatterySession & {
+    durationMinutes: number;
+  } => session.durationMinutes !== null && session.durationMinutes !== undefined;
+  const percentRange = (session: BatterySession) =>
+    session.startPercentage !== null &&
+    session.startPercentage !== undefined &&
+    session.endPercentage !== null &&
+    session.endPercentage !== undefined
+      ? `${session.startPercentage.toFixed(0)}% → ${session.endPercentage.toFixed(0)}%`
+      : 'Charge endpoints unavailable';
+
+  let completeDischarges = $derived(
+    sessions
+      .filter(
+        (session) =>
+          session.state === 'discharging' && session.completeness === 'complete',
+      )
+      .filter(hasDuration),
+  );
+  let completeCharges = $derived(
+    sessions
+      .filter(
+        (session) =>
+          session.state === 'charging' && session.completeness === 'complete',
+      )
+      .filter(hasDuration),
+  );
+  let longestDischarge = $derived(
+    [...completeDischarges].sort(
+      (left, right) => right.durationMinutes - left.durationMinutes,
+    )[0] ?? null,
+  );
+  let nearFullDischarge = $derived(
+    completeDischarges.find((session) => (session.startPercentage ?? -1) >= 95) ?? null,
+  );
+  let chargeToFull = $derived(
+    completeCharges.find((session) => (session.endPercentage ?? -1) >= 99) ?? null,
+  );
 </script>
 
 <section class="sessions-view" aria-labelledby={`${id}-title`}>
@@ -163,6 +206,53 @@
       No recorded sessions match these filters.
     </div>
   {:else}
+    <section class="sessions-view__answers" aria-label="Recorded battery answers">
+      <header>
+        <p class="sessions-view__eyebrow">Observed answers</p>
+        <h3>What your recorded runs show</h3>
+      </header>
+      <div>
+        <article>
+          <span>Longest on-battery run</span>
+          <strong
+            >{longestDischarge
+              ? formatDuration(longestDischarge.durationMinutes)
+              : 'Not measured yet'}</strong
+          >
+          <p>
+            {longestDischarge
+              ? percentRange(longestDischarge)
+              : 'Requires one uninterrupted completed discharge session.'}
+          </p>
+        </article>
+        <article>
+          <span>From near-full charge</span>
+          <strong
+            >{nearFullDischarge
+              ? formatDuration(nearFullDischarge.durationMinutes)
+              : 'Not measured yet'}</strong
+          >
+          <p>
+            {nearFullDischarge
+              ? percentRange(nearFullDischarge)
+              : 'Requires a recorded discharge that begins at 95% or more.'}
+          </p>
+        </article>
+        <article>
+          <span>Charge to full</span>
+          <strong
+            >{chargeToFull
+              ? formatDuration(chargeToFull.durationMinutes)
+              : 'Not measured yet'}</strong
+          >
+          <p>
+            {chargeToFull
+              ? percentRange(chargeToFull)
+              : 'Requires a recorded charge run that reaches a full state.'}
+          </p>
+        </article>
+      </div>
+    </section>
     <ol class="sessions-view__list" aria-label="Recorded battery sessions">
       {#each sessions as session (session.id)}
         <li class="sessions-view__item">
@@ -300,6 +390,50 @@
     padding: 0;
     list-style: none;
   }
+  .sessions-view__answers {
+    margin-top: 1rem;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 0.75rem;
+    padding: 0.9rem;
+    background: color-mix(in srgb, var(--color-surface-raised), transparent 25%);
+  }
+  .sessions-view__answers header {
+    display: flex;
+    gap: 0.5rem;
+    align-items: baseline;
+  }
+  .sessions-view__answers h3 {
+    margin: 0;
+    font-size: 0.92rem;
+  }
+  .sessions-view__answers > div {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.55rem;
+    margin-top: 0.75rem;
+  }
+  .sessions-view__answers article {
+    min-width: 0;
+    border: 1px solid var(--color-border-subtle);
+    border-radius: 0.6rem;
+    padding: 0.7rem;
+    background: var(--color-surface);
+  }
+  .sessions-view__answers span,
+  .sessions-view__answers p {
+    color: var(--color-text-secondary);
+    font-size: 0.72rem;
+    line-height: 1.35;
+  }
+  .sessions-view__answers strong {
+    display: block;
+    margin-top: 0.25rem;
+    color: var(--color-text-primary);
+    font-size: 0.9rem;
+  }
+  .sessions-view__answers p {
+    margin: 0.35rem 0 0;
+  }
   .sessions-view__item {
     border: 1px solid var(--color-border-subtle);
     border-radius: 0.75rem;
@@ -365,6 +499,11 @@
   @media (max-width: 42rem) {
     .sessions-view__filters {
       grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+  @media (max-width: 52rem) {
+    .sessions-view__answers > div {
+      grid-template-columns: 1fr;
     }
   }
 </style>

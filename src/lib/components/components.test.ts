@@ -232,6 +232,41 @@ describe('battery dashboard presentation components', () => {
     expect(onStateChange).toHaveBeenCalledWith('charging');
   });
 
+  it('turns complete recorded runs into explicit battery-duration answers', () => {
+    render(SessionsView, {
+      sessions: [
+        {
+          id: 'discharge-from-full',
+          batteryId: 'BAT0',
+          state: 'discharging',
+          startedAt: '2026-01-01T09:00:00Z',
+          endedAt: '2026-01-01T13:00:00Z',
+          completeness: 'complete',
+          durationMinutes: 240,
+          startPercentage: 100,
+          endPercentage: 12,
+        },
+        {
+          id: 'charge-to-full',
+          batteryId: 'BAT0',
+          state: 'charging',
+          startedAt: '2026-01-01T14:00:00Z',
+          endedAt: '2026-01-01T16:00:00Z',
+          completeness: 'complete',
+          durationMinutes: 120,
+          startPercentage: 22,
+          endPercentage: 100,
+        },
+      ],
+    });
+
+    expect(screen.getByText('What your recorded runs show')).toBeTruthy();
+    expect(screen.getAllByText('4h 0m')).toHaveLength(3);
+    expect(screen.getAllByText('2h 0m')).toHaveLength(2);
+    expect(screen.getAllByText('100% → 12%')).toHaveLength(2);
+    expect(screen.getAllByText('22% → 100%')).toHaveLength(1);
+  });
+
   it('keeps unavailable calendar values unavailable and changes aggregation', async () => {
     const onAggregationChange = vi.fn();
     render(CalendarHistoryView, {

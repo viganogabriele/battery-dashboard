@@ -581,20 +581,7 @@
 
     {#if activeSection === 'dashboard'}
       {#if selectedSnapshot}
-        <section class="dashboard-section" aria-labelledby="dashboard-chart-title">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Recent activity</p>
-              <h2 id="dashboard-chart-title">Live charge chart</h2>
-            </div>
-            <button
-              class="text-button"
-              type="button"
-              onclick={() => selectSection('chart')}
-            >
-              Open full chart <span aria-hidden="true">→</span>
-            </button>
-          </div>
+        <section class="dashboard-section" aria-label="Live charge chart">
           <RecentHistoryChart
             points={recentHistoryPoints}
             gaps={recentHistoryGaps}
@@ -677,48 +664,42 @@
           </aside>
         {/if}
 
-        <section class="metric-grid" aria-label="Battery metrics">
-          <MetricCard
-            label="Battery power"
-            value={formatMetric(selectedSnapshot.powerWatts, 'W', 1, true)}
-            source={selectedSnapshot.powerWatts.source}
-            stale={isStale(selectedSnapshot.powerWatts)}
-          />
-          <MetricCard
-            label="Voltage"
-            value={formatMetric(selectedSnapshot.voltageVolts, 'V', 2)}
-            source={selectedSnapshot.voltageVolts.source}
-            stale={isStale(selectedSnapshot.voltageVolts)}
-          />
-          <MetricCard
-            label="Current"
-            value={formatMetric(selectedSnapshot.currentAmps, 'A', 2, true)}
-            source={selectedSnapshot.currentAmps.source}
-            stale={isStale(selectedSnapshot.currentAmps)}
-          />
-          <MetricCard
-            label="Temperature"
-            value={formatMetric(selectedSnapshot.temperatureCelsius, '°C', 1)}
-            source={selectedSnapshot.temperatureCelsius.source}
-            stale={isStale(selectedSnapshot.temperatureCelsius)}
-          />
-          <MetricCard
-            label={selectedSnapshot.state === 'charging'
-              ? 'Time to full'
-              : 'Runtime estimate'}
-            value={formatDuration(selectedSnapshot.timeRemainingMinutes)}
-            source={selectedSnapshot.timeRemainingMinutes.source}
-            stale={isStale(selectedSnapshot.timeRemainingMinutes)}
-            unavailableLabel="Insufficient data"
-          />
-          <MetricCard
-            label="Cycle count"
-            value={selectedSnapshot.cycleCount.value}
-            source={selectedSnapshot.cycleCount.source}
-            stale={isStale(selectedSnapshot.cycleCount)}
-            unavailableLabel="Not exposed"
-          />
-        </section>
+        {#if isMetricAvailable(selectedSnapshot.voltageVolts) || isMetricAvailable(selectedSnapshot.currentAmps) || isMetricAvailable(selectedSnapshot.temperatureCelsius) || isMetricAvailable(selectedSnapshot.cycleCount)}
+          <section class="metric-grid" aria-label="Additional exposed battery metrics">
+            {#if isMetricAvailable(selectedSnapshot.voltageVolts)}
+              <MetricCard
+                label="Voltage"
+                value={formatMetric(selectedSnapshot.voltageVolts, 'V', 2)}
+                source={selectedSnapshot.voltageVolts.source}
+                stale={isStale(selectedSnapshot.voltageVolts)}
+              />
+            {/if}
+            {#if isMetricAvailable(selectedSnapshot.currentAmps)}
+              <MetricCard
+                label="Current"
+                value={formatMetric(selectedSnapshot.currentAmps, 'A', 2, true)}
+                source={selectedSnapshot.currentAmps.source}
+                stale={isStale(selectedSnapshot.currentAmps)}
+              />
+            {/if}
+            {#if isMetricAvailable(selectedSnapshot.temperatureCelsius)}
+              <MetricCard
+                label="Temperature"
+                value={formatMetric(selectedSnapshot.temperatureCelsius, '°C', 1)}
+                source={selectedSnapshot.temperatureCelsius.source}
+                stale={isStale(selectedSnapshot.temperatureCelsius)}
+              />
+            {/if}
+            {#if isMetricAvailable(selectedSnapshot.cycleCount)}
+              <MetricCard
+                label="Cycle count"
+                value={selectedSnapshot.cycleCount.value}
+                source={selectedSnapshot.cycleCount.source}
+                stale={isStale(selectedSnapshot.cycleCount)}
+              />
+            {/if}
+          </section>
+        {/if}
       {:else}
         <EmptyState
           title={isNativeRuntime
@@ -790,6 +771,8 @@
           gapReason: session.boundaryReason.replaceAll('-', ' '),
           durationMinutes:
             session.durationSeconds === null ? null : session.durationSeconds / 60,
+          startPercentage: session.startPercentage,
+          endPercentage: session.endPercentage,
           percentageChange:
             session.startPercentage === null || session.endPercentage === null
               ? null
