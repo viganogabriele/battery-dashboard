@@ -101,6 +101,7 @@
   let isNativeRuntime = $state(false);
   let liveDataError = $state<string | null>(null);
   let isRefreshingLiveData = $state(false);
+  let isFetchingLiveData = false;
   let recentHistory = $state<RecentBatteryHistoryData | null>(null);
   let isRefreshingHistory = $state(false);
   let historyRange = $state<RecentHistoryRangeHours>(24);
@@ -228,8 +229,12 @@
 
   function selectBattery(id: string) {
     selectedBatteryId = id;
-    if (isLiveData) void refreshRecentHistory(id);
-    if (isLiveData) void refreshSessionHistory(id);
+    if (isLiveData && (activeSection === 'dashboard' || activeSection === 'chart')) {
+      void refreshRecentHistory(id);
+    }
+    if (isLiveData && (activeSection === 'sessions' || activeSection === 'history')) {
+      void refreshSessionHistory(id);
+    }
     if (isLiveData && activeSection === 'health') void refreshBatteryHealth(id);
     if (isLiveData && activeSection === 'insights') void refreshAnomalies(id);
   }
@@ -320,10 +325,14 @@
     if (isLiveData) void refreshRecentHistory();
   }
 
-  async function refreshLiveData() {
-    if (isRefreshingLiveData) return;
+  async function refreshLiveData({
+    loadChart = false,
+    showPending = false,
+  }: { loadChart?: boolean; showPending?: boolean } = {}) {
+    if (isFetchingLiveData) return;
 
-    isRefreshingLiveData = true;
+    isFetchingLiveData = true;
+    if (showPending) isRefreshingLiveData = true;
     try {
       const { invoke } = await import('@tauri-apps/api/core');
       const client = createBatteryDashboardClient(() =>
@@ -345,10 +354,10 @@
       selectedBatteryId = selectionIsStillAvailable
         ? selectedBatteryId
         : suggestedBatteryId;
-      await refreshRecentHistory(selectedBatteryId);
-      await refreshSessionHistory(selectedBatteryId);
-      if (activeSection === 'health') await refreshBatteryHealth(selectedBatteryId);
-      if (activeSection === 'insights') await refreshAnomalies(selectedBatteryId);
+      // History, sessions, health and insights come from SQLite. Refreshing all
+      // of them with every live hardware poll makes a tiled WebKit window
+      // visibly hitch, while the recorder only adds one durable sample/minute.
+      if (loadChart) await refreshRecentHistory(selectedBatteryId);
     } catch (error) {
       // Native failures must stay visible: fixtures belong only to browser preview.
       liveDashboard = null;
@@ -357,7 +366,8 @@
       batteryHealth = null;
       liveDataError = `Could not read local battery data: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
-      isRefreshingLiveData = false;
+      isFetchingLiveData = false;
+      if (showPending) isRefreshingLiveData = false;
     }
   }
 
@@ -449,10 +459,22 @@
 
   onMount(() => {
     isNativeRuntime = '__TAURI_INTERNALS__' in window;
-    void refreshLiveData();
-    const refreshInterval = window.setInterval(() => void refreshLiveData(), 15_000);
+    void refreshLiveData({ loadChart: true, showPending: true });
+    // Live hardware values update without forcing SQLite work or a loading
+    // state. This avoids periodic layout churn in a Hyprland tile.
+    const refreshInterval = window.setInterval(() => void refreshLiveData(), 30_000);
+    // The recorder commits at most once per minute, so chart refreshes follow
+    // that cadence and only while a chart is actually on screen.
+    const historyInterval = window.setInterval(() => {
+      if (activeSection === 'dashboard' || activeSection === 'chart') {
+        void refreshRecentHistory();
+      }
+    }, 60_000);
 
-    return () => window.clearInterval(refreshInterval);
+    return () => {
+      window.clearInterval(refreshInterval);
+      window.clearInterval(historyInterval);
+    };
   });
 
   async function handleExport(request: ExportRequest) {
@@ -592,6 +614,31 @@
 
     {#if activeSection === 'dashboard'}
       {#if selectedSnapshot}
+        <section class="dashboard-section" aria-labelledby="dashboard-chart-title">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Recent activity</p>
+              <h2 id="dashboard-chart-title">Live charge chart</h2>
+            </div>
+            <button
+              class="text-button"
+              type="button"
+              onclick={() => selectSection('chart')}
+            >
+              Open full chart <span aria-hidden="true">→</span>
+            </button>
+          </div>
+          <RecentHistoryChart
+            points={recentHistoryPoints}
+            gaps={recentHistoryGaps}
+            summary={recentHistorySummary}
+            loading={isRefreshingHistory}
+            recorderState={recentHistoryRecorderState}
+            selectedRange={historyRange}
+            onRangeChange={selectHistoryRange}
+          />
+        </section>
+
         <section class="dashboard-hero" aria-label="Selected battery overview">
           <div class="dashboard-hero__charge">
             <p class="metric-label">Current charge</p>
@@ -643,31 +690,6 @@
             The provider marked this reading stale after a delayed update or resume.
           </aside>
         {/if}
-
-        <section class="dashboard-section" aria-labelledby="dashboard-chart-title">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Recent activity</p>
-              <h2 id="dashboard-chart-title">Live charge chart</h2>
-            </div>
-            <button
-              class="text-button"
-              type="button"
-              onclick={() => selectSection('chart')}
-            >
-              Open full chart <span aria-hidden="true">→</span>
-            </button>
-          </div>
-          <RecentHistoryChart
-            points={recentHistoryPoints}
-            gaps={recentHistoryGaps}
-            summary={recentHistorySummary}
-            loading={isRefreshingHistory}
-            recorderState={recentHistoryRecorderState}
-            selectedRange={historyRange}
-            onRangeChange={selectHistoryRange}
-          />
-        </section>
 
         <section class="quick-links" aria-labelledby="quick-links-title">
           <div class="section-heading">

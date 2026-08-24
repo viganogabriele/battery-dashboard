@@ -176,6 +176,30 @@ describe('battery dashboard presentation components', () => {
     expect(screen.getByText('Transient live readings are shown.')).toBeTruthy();
   });
 
+  it('uses a labelled observed range so small real charge changes stay visible', () => {
+    render(RecentHistoryChart, {
+      recorderState: 'enabled',
+      points: [
+        {
+          timestamp: '2026-01-01T09:00:00Z',
+          percentage: 70,
+          state: 'discharging',
+          persisted: true,
+        },
+        {
+          timestamp: '2026-01-01T09:05:00Z',
+          percentage: 72,
+          state: 'discharging',
+          persisted: true,
+        },
+      ],
+    });
+
+    expect(screen.getByText('68%')).toBeTruthy();
+    expect(screen.getByText('74%')).toBeTruthy();
+    expect(document.querySelectorAll('.recent-history__line')).toHaveLength(1);
+  });
+
   it('explains why there is no persistent history when recording is disabled', () => {
     render(RecentHistoryChart, { points: [], recorderState: 'disabled' });
 

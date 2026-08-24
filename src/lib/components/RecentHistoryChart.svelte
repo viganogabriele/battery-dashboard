@@ -104,6 +104,13 @@
     return `${value.toFixed(1)} Wh`;
   }
 
+  function formatTime(value: number): string {
+    return new Intl.DateTimeFormat(undefined, {
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date(value));
+  }
+
   function gapDescription(gap: RecentHistoryGap): string {
     return gap.reason
       ? `Missing readings: ${gap.reason}`
@@ -118,8 +125,31 @@
   );
   let firstTimestamp = $derived(validPoints[0]?.timestampMs ?? 0);
   let lastTimestamp = $derived(validPoints.at(-1)?.timestampMs ?? firstTimestamp + 1);
-  let chartMinimum = $derived(0);
-  let chartMaximum = $derived(100);
+  // A full 0–100% axis makes an actual one- or two-percent change appear
+  // flat. This is still an honest axis: its labels expose the tight observed
+  // range, clamped to the physical battery limits.
+  let observedMinimum = $derived(
+    validPoints.length ? Math.min(...validPoints.map((point) => point.percentage)) : 0,
+  );
+  let observedMaximum = $derived(
+    validPoints.length
+      ? Math.max(...validPoints.map((point) => point.percentage))
+      : 100,
+  );
+  let chartPadding = $derived(
+    validPoints.length ? Math.max(2, (observedMaximum - observedMinimum) * 0.2) : 0,
+  );
+  let chartMinimum = $derived(
+    validPoints.length ? Math.max(0, Math.floor(observedMinimum - chartPadding)) : 0,
+  );
+  let chartMaximum = $derived(
+    validPoints.length ? Math.min(100, Math.ceil(observedMaximum + chartPadding)) : 100,
+  );
+  let gridValues = $derived([
+    chartMinimum,
+    (chartMinimum + chartMaximum) / 2,
+    chartMaximum,
+  ]);
   let hasPersistedPoints = $derived(validPoints.some((point) => point.persisted));
   let hasTransientPoints = $derived(validPoints.some((point) => !point.persisted));
 
@@ -237,7 +267,7 @@
         {validPoints.length} readings. Lines do not connect across {gaps.length} recorded
         gap{gaps.length === 1 ? '' : 's'}.
       </desc>
-      {#each [0, 50, 100] as value (value)}
+      {#each gridValues as value (value)}
         <line
           class="recent-history__grid"
           x1={padding.left}
@@ -247,6 +277,12 @@
         />
         <text x={padding.left - 8} y={y(value) + 4} text-anchor="end">{value}%</text>
       {/each}
+      <text x={padding.left} y={height - 8} text-anchor="start"
+        >{formatTime(firstTimestamp)}</text
+      >
+      <text x={width - padding.right} y={height - 8} text-anchor="end"
+        >{formatTime(lastTimestamp)}</text
+      >
       {#each segments as segment, index (`${segment.d}-${index}`)}
         <path
           class:recent-history__line--charging={segment.state === 'charging'}
