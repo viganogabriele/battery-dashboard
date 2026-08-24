@@ -185,48 +185,6 @@
     return 'enabled';
   });
 
-  const quickLinks: readonly {
-    section: ProductSection;
-    label: string;
-    description: string;
-  }[] = [
-    {
-      section: 'chart',
-      label: 'Live chart',
-      description: 'Trace charge and gaps over time.',
-    },
-    {
-      section: 'sessions',
-      label: 'Sessions',
-      description: 'Review charging and on-battery runs.',
-    },
-    {
-      section: 'history',
-      label: 'History',
-      description: 'Compare daily, weekly, and monthly records.',
-    },
-    {
-      section: 'health',
-      label: 'Health',
-      description: 'Check capacity, cycles, and wear signals.',
-    },
-    {
-      section: 'insights',
-      label: 'Insights',
-      description: 'Review evidence-backed unusual battery behaviour.',
-    },
-    {
-      section: 'export',
-      label: 'Export',
-      description: 'Choose a local data set and file format.',
-    },
-    {
-      section: 'settings',
-      label: 'Settings',
-      description: 'Control opt-in background recording.',
-    },
-  ];
-
   function selectBattery(id: string) {
     selectedBatteryId = id;
     if (isLiveData && (activeSection === 'dashboard' || activeSection === 'chart')) {
@@ -371,6 +329,20 @@
     }
   }
 
+  async function refreshVisibleData() {
+    const needsChart = activeSection === 'dashboard' || activeSection === 'chart';
+    await refreshLiveData({ loadChart: needsChart, showPending: true });
+    if (activeSection === 'sessions' || activeSection === 'history') {
+      await refreshSessionHistory();
+    } else if (activeSection === 'health') {
+      await refreshBatteryHealth();
+    } else if (activeSection === 'insights') {
+      await refreshAnomalies();
+    } else if (activeSection === 'settings') {
+      await refreshPowerProfile();
+    }
+  }
+
   async function refreshRecentHistory(batteryId = selectedBatteryId) {
     if (isRefreshingHistory) return;
 
@@ -460,21 +432,6 @@
   onMount(() => {
     isNativeRuntime = '__TAURI_INTERNALS__' in window;
     void refreshLiveData({ loadChart: true, showPending: true });
-    // Live hardware values update without forcing SQLite work or a loading
-    // state. This avoids periodic layout churn in a Hyprland tile.
-    const refreshInterval = window.setInterval(() => void refreshLiveData(), 30_000);
-    // The recorder commits at most once per minute, so chart refreshes follow
-    // that cadence and only while a chart is actually on screen.
-    const historyInterval = window.setInterval(() => {
-      if (activeSection === 'dashboard' || activeSection === 'chart') {
-        void refreshRecentHistory();
-      }
-    }, 60_000);
-
-    return () => {
-      window.clearInterval(refreshInterval);
-      window.clearInterval(historyInterval);
-    };
   });
 
   async function handleExport(request: ExportRequest) {
@@ -600,6 +557,16 @@
         <p class="page-header__description">{selectedSectionInfo.description}</p>
       </div>
       <div class="page-header__status" aria-live="polite">
+        {#if isNativeRuntime}
+          <button
+            class="refresh-button"
+            type="button"
+            onclick={() => void refreshVisibleData()}
+            disabled={isRefreshingLiveData}
+          >
+            {isRefreshingLiveData ? 'Refreshing…' : 'Refresh'}
+          </button>
+        {/if}
         {#if isRefreshingLiveData}
           <span class="status-chip status-chip--pending">Refreshing</span>
         {:else if isLiveData}
@@ -635,6 +602,7 @@
             loading={isRefreshingHistory}
             recorderState={recentHistoryRecorderState}
             selectedRange={historyRange}
+            rangeEnd={recentHistory?.collectedAt ?? null}
             onRangeChange={selectHistoryRange}
           />
         </section>
@@ -681,6 +649,24 @@
               Read from Linux battery providers. Metrics stay unavailable when the
               provider does not expose them.
             </p>
+            <dl class="hero-state__facts" aria-label="Current useful battery readings">
+              <div>
+                <dt>Current draw</dt>
+                <dd>
+                  {formatMetric(selectedSnapshot.powerWatts, 'W', 1, true) ??
+                    'Not exposed'}
+                </dd>
+              </div>
+              <div>
+                <dt>
+                  {selectedSnapshot.state === 'charging' ? 'Time to full' : 'Runtime'}
+                </dt>
+                <dd>
+                  {formatDuration(selectedSnapshot.timeRemainingMinutes) ??
+                    'Needs provider or recorded run'}
+                </dd>
+              </div>
+            </dl>
           </div>
         </section>
 
@@ -690,29 +676,6 @@
             The provider marked this reading stale after a delayed update or resume.
           </aside>
         {/if}
-
-        <section class="quick-links" aria-labelledby="quick-links-title">
-          <div class="section-heading">
-            <div>
-              <p class="eyebrow">Workspace</p>
-              <h2 id="quick-links-title">Battery records</h2>
-            </div>
-          </div>
-          <div class="quick-links__grid">
-            {#each quickLinks as link (link.section)}
-              <button
-                class="quick-link"
-                type="button"
-                onclick={() => selectSection(link.section)}
-                aria-label={`${link.label}: ${link.description}`}
-              >
-                <span class="quick-link__label">{link.label}</span>
-                <span class="quick-link__description">{link.description}</span>
-                <span class="quick-link__arrow" aria-hidden="true">↗</span>
-              </button>
-            {/each}
-          </div>
-        </section>
 
         <section class="metric-grid" aria-label="Battery metrics">
           <MetricCard
@@ -780,6 +743,7 @@
             loading={isRefreshingHistory}
             recorderState={recentHistoryRecorderState}
             selectedRange={historyRange}
+            rangeEnd={recentHistory?.collectedAt ?? null}
             onRangeChange={selectHistoryRange}
           />
         </section>

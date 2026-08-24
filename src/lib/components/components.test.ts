@@ -146,7 +146,7 @@ describe('battery dashboard presentation components', () => {
     });
 
     expect(screen.getByText('History has gaps.')).toBeTruthy();
-    expect(screen.getByText(/computer was suspended/)).toBeTruthy();
+    expect(screen.getAllByText(/computer was suspended/)).toHaveLength(2);
     expect(document.querySelectorAll('.recent-history__line')).toHaveLength(0);
   });
 

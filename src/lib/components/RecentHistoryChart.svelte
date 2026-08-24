@@ -38,6 +38,7 @@
     loading?: boolean;
     recorderState?: RecentHistoryRecorderState;
     selectedRange?: HistoryRangeHours;
+    rangeEnd?: Date | string | null;
     onRangeChange?: (hours: HistoryRangeHours) => void;
   };
 
@@ -49,6 +50,7 @@
     loading = false,
     recorderState = 'disabled',
     selectedRange = 24,
+    rangeEnd = null,
     onRangeChange = () => {},
   }: Props = $props();
 
@@ -111,6 +113,13 @@
     }).format(new Date(value));
   }
 
+  function formatDateTime(value: number): string {
+    return new Intl.DateTimeFormat(undefined, {
+      dateStyle: 'medium',
+      timeStyle: 'short',
+    }).format(new Date(value));
+  }
+
   function gapDescription(gap: RecentHistoryGap): string {
     return gap.reason
       ? `Missing readings: ${gap.reason}`
@@ -125,6 +134,50 @@
   );
   let firstTimestamp = $derived(validPoints[0]?.timestampMs ?? 0);
   let lastTimestamp = $derived(validPoints.at(-1)?.timestampMs ?? firstTimestamp + 1);
+  let rangeEndTimestamp = $derived.by(() => {
+    const parsed = rangeEnd === null ? Number.NaN : timestampMs(rangeEnd);
+    return Number.isFinite(parsed)
+      ? parsed
+      : (validPoints.at(-1)?.timestampMs ?? Date.now());
+  });
+  let requestedStartTimestamp = $derived(
+    rangeEndTimestamp - selectedRange * 60 * 60 * 1_000,
+  );
+  let persistedPoints = $derived(validPoints.filter((point) => point.persisted));
+  let firstPersistedTimestamp = $derived(persistedPoints[0]?.timestampMs ?? null);
+  let coverageSeconds = $derived(
+    firstPersistedTimestamp === null || persistedPoints.length < 2
+      ? 0
+      : Math.max(0, rangeEndTimestamp - firstPersistedTimestamp) / 1_000,
+  );
+  let requestedSeconds = $derived(selectedRange * 60 * 60);
+  let coveragePercentage = $derived(
+    Math.min(100, Math.round((coverageSeconds / requestedSeconds) * 100)),
+  );
+  let hasUnrecordedPrefix = $derived(
+    firstPersistedTimestamp !== null &&
+      firstPersistedTimestamp > requestedStartTimestamp,
+  );
+  let observedState = $derived(
+    persistedPoints.length &&
+      persistedPoints.every((point) => point.state === persistedPoints[0]?.state)
+      ? persistedPoints[0]?.state
+      : null,
+  );
+  let observedPercentageChange = $derived(
+    persistedPoints.length >= 2
+      ? persistedPoints.at(-1)!.percentage - persistedPoints[0]!.percentage
+      : null,
+  );
+  let observedPercentageRate = $derived(
+    observedState !== 'charging' && observedState !== 'discharging'
+      ? null
+      : coverageSeconds >= 15 * 60 &&
+          gaps.length === 0 &&
+          observedPercentageChange !== null
+        ? observedPercentageChange / (coverageSeconds / 3_600)
+        : null,
+  );
   // A full 0–100% axis makes an actual one- or two-percent change appear
   // flat. This is still an honest axis: its labels expose the tight observed
   // range, clamped to the physical battery limits.
@@ -154,11 +207,14 @@
   let hasTransientPoints = $derived(validPoints.some((point) => !point.persisted));
 
   function x(point: ValidPoint): number {
+    return xTimestamp(point.timestampMs);
+  }
+
+  function xTimestamp(timestamp: number): number {
     const range = lastTimestamp - firstTimestamp || 1;
     return (
       padding.left +
-      ((point.timestampMs - firstTimestamp) / range) *
-        (width - padding.left - padding.right)
+      ((timestamp - firstTimestamp) / range) * (width - padding.left - padding.right)
     );
   }
 
@@ -186,6 +242,19 @@
 
     return result;
   });
+
+  let visibleGaps = $derived.by(() =>
+    gaps
+      .map((gap) => ({
+        start: timestampMs(gap.start),
+        end: timestampMs(gap.end),
+        label: gapDescription(gap),
+      }))
+      .filter(
+        (gap) =>
+          Number.isFinite(gap.start) && Number.isFinite(gap.end) && gap.end > gap.start,
+      ),
+  );
 
   let stateDescription = $derived.by(() => {
     if (loading) return 'Loading recent local readings.';
@@ -230,6 +299,25 @@
   {#if loading}
     <div class="recent-history__placeholder" role="status">Loading local history…</div>
   {:else if validPoints.length}
+    {#if persistedPoints.length}
+      <p class="recent-history__coverage" role="status">
+        <strong
+          >Recorded coverage: {Math.floor(coverageSeconds / 60)} minutes ({coveragePercentage}%
+          of this view).</strong
+        >
+        {#if hasUnrecordedPrefix}
+          Recording began {formatDateTime(
+            firstPersistedTimestamp ?? rangeEndTimestamp,
+          )}; the earlier part of this {selectedRange}-hour view has no recorded
+          samples.
+        {/if}
+        {#if observedPercentageRate !== null}
+          Observed {observedState === 'charging' ? 'charge' : 'discharge'}: {Math.abs(
+            observedPercentageChange ?? 0,
+          ).toFixed(1)}% at {Math.abs(observedPercentageRate).toFixed(1)}%/h.
+        {/if}
+      </p>
+    {/if}
     <div class="recent-history__legend" aria-label="Chart legend">
       <span
         ><i class="recent-history__legend-line recent-history__legend-line--charging"
@@ -267,6 +355,17 @@
         {validPoints.length} readings. Lines do not connect across {gaps.length} recorded
         gap{gaps.length === 1 ? '' : 's'}.
       </desc>
+      {#each visibleGaps as gap (`${gap.start}-${gap.end}`)}
+        <rect
+          class="recent-history__gap-region"
+          x={xTimestamp(gap.start)}
+          y={padding.top}
+          width={Math.max(3, xTimestamp(gap.end) - xTimestamp(gap.start))}
+          height={height - padding.top - padding.bottom}
+        >
+          <title>{gap.label}</title>
+        </rect>
+      {/each}
       {#each gridValues as value (value)}
         <line
           class="recent-history__grid"
@@ -405,6 +504,18 @@
     color: var(--color-text-secondary);
     font-size: 0.76rem;
   }
+  .recent-history__coverage {
+    margin: 0.85rem 0 0;
+    border-left: 3px solid var(--color-status);
+    padding: 0.45rem 0.65rem;
+    color: var(--color-text-secondary);
+    background: color-mix(in srgb, var(--color-status), transparent 92%);
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
+  .recent-history__coverage strong {
+    color: var(--color-text-primary);
+  }
   .recent-history__legend span {
     display: inline-flex;
     gap: 0.35rem;
@@ -453,6 +564,12 @@
   .recent-history__grid {
     stroke: var(--color-border-subtle);
     stroke-dasharray: 3 4;
+  }
+  .recent-history__gap-region {
+    fill: color-mix(in srgb, var(--color-warning), transparent 78%);
+    stroke: var(--color-warning);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
   }
   text {
     fill: var(--color-text-secondary);
