@@ -7,10 +7,21 @@ It captures the agreed product scope, architecture, portability strategy,
 development phases, quality gates, privacy constraints, and known hardware
 limitations.
 
-Phases 1–4 are complete: the repository foundation, simulated Svelte dashboard,
-Tauri desktop shell, and live UPower/sysfs reader are implemented.
-Implementation continues phase by phase. Advanced features must not be
-implemented before the core version is stable.
+Status reviewed on 2026-08-24:
+
+- Phases 1–7 are implemented in the repository.
+- Phase 8 is functionally implemented for health, degradation, cycles, and
+  export, but release qualification, packaging, lifecycle automation, and
+  long-running real-hardware validation are still incomplete.
+- Phase 9 is partial: conservative local anomaly detection and explicit
+  `powerprofilesctl` controls exist; notifications and per-process impact do
+  not.
+- Phase 10, the optional Omarchy integration, has not started.
+
+The application is a working beta, not a finished 1.0 release. The immediate
+focus is product usefulness, responsive Hyprland/Wayland behavior,
+evidence-based battery-duration answers, and a reproducible Arch release. Advanced
+features must not displace those release blockers.
 
 ## 2. Product vision
 
@@ -636,6 +647,102 @@ historical data after confirmation.
 
 ## 23. Development phases
 
+### 23.1 Current implementation audit
+
+The status labels below distinguish three different conditions:
+
+- **implemented** means production code and deterministic tests exist;
+- **validated** means the behavior has also been exercised on supported real
+  hardware and through its install/update/remove lifecycle;
+- **release complete** means packaging, documentation, UX acceptance, and all
+  required quality gates are reproducible from a clean checkout.
+
+Current product status:
+
+| Area | Status | What is present | What remains |
+| --- | --- | --- | --- |
+| Native shell | Implemented | Tauri window, static production assets, no tray, no permanent web server | Repeat window-lifecycle and menu-launch checks from a clean install |
+| Live battery data | Implemented and locally exercised | UPower/sysfs merge, provenance, missing values, multiple batteries | Test a broader matrix of Arch laptops and document observed driver quirks |
+| Recorder and SQLite | Implemented and locally exercised | Opt-in 60-second systemd user timer, one-shot recorder, migrations, gaps, preserved history | Automated install/update/disable/uninstall/purge acceptance test |
+| Dashboard and recent chart | Implemented, UX still in progress | Real current metrics, adaptive chart, explicit coverage and real gaps, manual refresh | Remove remaining density/layout problems at small tiled sizes; design a smooth low-cost live update that does not re-query every screen or cause layout hitches |
+| Sessions and calendar history | Implemented | Complete/incomplete sessions, boundary reasons, daily/weekly/monthly summaries, date/state/battery filters | Improve practical comparisons such as today versus yesterday and make low-coverage periods easier to interpret |
+| Observed battery answers | Partial | Longest completed discharge, near-full discharge, and completed charge-to-full summaries | Add evidence-based duration by starting-charge bands, charging curves, discharge curves, sample counts, and confidence/coverage; never extrapolate from insufficient history |
+| Health and degradation | Implemented | Full/design capacity, health, hardware cycles, capacity history, conservative trend | Long-duration real-hardware validation and clearer explanations when firmware omits fields |
+| Export | Implemented | Raw/session/summary CSV and JSON, atomic writes, privacy-safe fields | Better destination selection UX, end-to-end round-trip checks, and release documentation examples |
+| Anomalies | Partial advanced feature | Local unusual-power, rapid-discharge, and interrupted-charge analysis | Real-history tuning, false-positive review, opt-in presentation, and clearer confidence wording |
+| Energy profiles | Partial advanced feature | Explicit allowlisted `powerprofilesctl` read/change controls | Cross-desktop validation; no automatic switching unless separately designed and explicitly enabled |
+| Notifications | Not started | — | Opt-in local thresholds, cooldown, deduplication, suspend/reboot behavior |
+| Per-process impact | Not started | — | Feasibility spike first; expose only defensible activity impact, never invented per-process watts |
+| Packaging and distribution | Partial | Release binary, Tauri bundle configuration, manual per-user install instructions, desktop entry and icon | Reproducible Arch package/AUR path, checksums, scripted per-user install/uninstall, clean-machine verification, and a tested broader-Linux strategy |
+| Omarchy plugin | Not started and optional | Core app remains independent of Omarchy | Stabilize a read-only contract, then build and document a separately removable plugin |
+
+### 23.2 Next execution order
+
+Work should continue in this order unless a discovered correctness issue takes
+priority:
+
+1. **Release correctness and data trust**
+   - verify the recorder across application upgrades without losing SQLite
+     history;
+   - exercise suspend, reboot, disabled recorder, missing UPower, and multiple
+     battery cases on real hardware;
+   - add an in-app diagnostics view or copyable report for provider, database,
+     recorder, and last-sample status;
+   - keep unavailable values unavailable and identify every estimate as either
+     source-provided or historically derived.
+2. **Useful battery answers**
+   - summarize today and yesterday using recorded duration, charge change,
+     energy change, average draw, and coverage;
+   - build observed charge/discharge curves and duration distributions by
+     starting percentage bands;
+   - estimate time to full or remaining runtime only when a minimum evidence
+     policy is satisfied, and show sample count/range alongside the answer;
+   - distinguish current power, session average power, and transferred energy.
+3. **Responsive design and interaction quality**
+   - test at 640×520, 800×600, 960×640, 1280×820, and maximized sizes;
+   - treat Hyprland tiled windows as a primary acceptance environment;
+   - prevent text shrinking, overlap, horizontal page overflow, oversized empty
+     cards, repeated navigation, and content hidden below decorative sections;
+   - keep the most decision-useful real values above the fold;
+   - retain manual refresh until a measured, non-janking refresh strategy is
+     proven; history should not be reloaded more often than the recorder writes.
+4. **Version 1 release completion**
+   - add scripted per-user install, update, uninstall, and explicit data purge;
+   - add an Arch packaging path and verify application-menu launch;
+   - run the complete release suite from a clean checkout and isolated user
+     environment;
+   - update screenshots and all user documentation to match the shipped UI;
+   - choose a license and settle the product name/icon before a public release.
+5. **Advanced and optional work**
+   - notifications after version 1 behavior is stable;
+   - anomaly and profile-control hardening;
+   - per-process feasibility research;
+   - optional Omarchy plugin only after the database/read-only contract is
+     stable.
+
+### 23.3 UX acceptance criteria for version 1
+
+Version 1 is not complete until all of the following are true:
+
+- a fresh install with recording disabled shows live real data or a precise
+  hardware/provider error, never fixtures;
+- enabling recording survives closing the UI, rebooting, and updating the app;
+- disabling recording stops future writes but preserves existing history;
+- the dashboard remains usable in a 640×520 tiled window without overlap or
+  horizontal page scrolling;
+- recorded coverage and genuine suspend/reboot gaps are visually distinct from
+  time before recording began;
+- today/yesterday, charge-to-full, and discharge-duration answers state their
+  evidence and remain unavailable when the evidence threshold is not met;
+- unavailable temperature, cycles, capacity, current, or voltage do not create
+  prominent empty-card noise;
+- opening, switching sections, and refreshing do not produce visible periodic
+  layout hitches;
+- keyboard navigation, focus indicators, labels, contrast, and chart text/table
+  alternatives pass an accessibility review;
+- install, update, menu launch, disable, uninstall, and optional history purge
+  are documented and reproducible without `sudo` or `pkexec`.
+
 ### Phase 1 — Project structure and initial documentation — Complete
 
 Deliverables:
@@ -800,7 +907,7 @@ Exit tests:
 
 This completes the beta.
 
-### Phase 8 — Health, cycles, degradation, export, and release docs
+### Phase 8 — Health, cycles, degradation, export, and release docs — Functional implementation complete; release validation open
 
 Deliverables:
 
@@ -828,17 +935,27 @@ Exit tests:
 - complete frontend and Rust test suites;
 - Tauri release build and real-hardware smoke test.
 
-This completes version 1.0.
+Health, degradation, cycle handling, export, the desktop entry, and the core
+documentation are implemented. This phase does **not** yet complete version
+1.0 because the repository still lacks a fully automated per-user lifecycle,
+an Arch distribution path, isolated install/update/uninstall/purge validation,
+and sufficient real-hardware UX acceptance. Those open items are release
+blockers, not optional polish.
 
-### Phase 9 — Advanced features, only after version 1
+### Phase 9 — Advanced features, only after version 1 — Partial and experimental
 
 #### Local notifications
+
+Status: not started.
 
 - opt-in thresholds for percentage and genuine battery temperature;
 - deduplication and cooldown;
 - local desktop notifications without a tray process.
 
 #### Anomaly detection
+
+Status: implemented conservatively in Rust and exposed in the UI; real-history
+tuning and product validation remain.
 
 - local-only historical baseline;
 - unusual draw, unexpectedly fast discharge, or interrupted charge detection;
@@ -847,12 +964,18 @@ This completes version 1.0.
 
 #### Energy profiles
 
+Status: explicit profile discovery and manual selection are implemented for
+`powerprofilesctl`; automatic switching is intentionally absent.
+
 - detect a supported profile backend such as power-profiles-daemon;
 - show the active profile;
 - change it only after an explicit user action;
 - no privilege escalation and a clear unsupported state.
 
 #### Per-process impact
+
+Status: not started. This remains a research task rather than a promised
+measurement feature.
 
 - begin with a technical feasibility spike;
 - use only interfaces already readable by the unprivileged user;
@@ -861,7 +984,7 @@ This completes version 1.0.
 - present estimates as "activity impact" with methodology and confidence;
 - omit the feature when reliable data is unavailable.
 
-### Phase 10 — Optional Omarchy plugin
+### Phase 10 — Optional Omarchy plugin — Not started
 
 This phase is optional and may start only after the version-1 data contract and
 database schema are stable.
@@ -882,15 +1005,15 @@ packaged files under `/usr/share/omarchy`.
 
 ## 24. Release milestones
 
-| Milestone | Included phases | Definition |
-| --- | ---: | --- |
-| UI prototype | 1–3 | Simulated interface in a real Tauri window |
-| Technical MVP | 1–5 | Real data, SQLite, and optional 60-second recording |
-| Usable MVP | 1–6 | Useful dashboard and recent-history chart |
-| Beta | 1–7 | Sessions and calendar history |
-| Version 1.0 | 1–8 | All core product requirements and release documentation |
-| Advanced release | 9 | Opt-in advanced features |
-| Omarchy integration | 10 | Optional bar plugin, independent from the app |
+| Milestone | Included phases | Status | Definition |
+| --- | ---: | --- | --- |
+| UI prototype | 1–3 | Complete | Simulated interface in a real Tauri window |
+| Technical MVP | 1–5 | Complete | Real data, SQLite, and optional 60-second recording |
+| Usable MVP | 1–6 | Complete | Useful dashboard and recent-history chart |
+| Beta | 1–7 | Complete | Sessions and calendar history |
+| Version 1.0 | 1–8 | Not released | Core implementation exists; release validation and packaging remain |
+| Advanced release | 9 | Partial | Anomalies and manual profiles exist; notifications and per-process impact remain |
+| Omarchy integration | 10 | Not started | Optional bar plugin, independent from the app |
 
 ## 25. Quality gates
 

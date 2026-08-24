@@ -14,7 +14,7 @@ interfaces are supported, but they are not yet official targets.
 
 ## Current status
 
-The usable desktop application is complete for its local-only scope. It has one
+Battery Dashboard is a working beta, not yet a finished 1.0 release. It has one
 normal window, no tray or top-bar icon, and no production HTTP server. It reads
 physical laptop batteries from UPower and Linux sysfs, falls back per metric,
 and retains the source of every value.
@@ -28,9 +28,12 @@ recorder launched every 60 seconds by a `systemd --user` timer. Gaps caused by
 suspend, reboot, missing samples, or different batteries are retained instead
 of being interpolated.
 
-The product will be built incrementally: simulated UI first, then Tauri,
-real battery data, persistent recording, history, health, and export. The
-authoritative scope and phase order are in [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
+The version-1 core is implemented, but responsive UX acceptance, evidence-based
+battery-duration comparisons, automated install/update/remove validation, Arch
+packaging, and broader real-hardware testing remain. Notifications,
+per-process impact, and the optional Omarchy plugin are not implemented. The
+authoritative status, remaining work, and execution order are in
+[DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
 
 ## Available capabilities
 
