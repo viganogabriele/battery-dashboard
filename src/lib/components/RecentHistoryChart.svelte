@@ -1,5 +1,9 @@
 <script lang="ts">
-  export type HistoryRangeHours = 2 | 6 | 12 | 24;
+  /**
+   * `72`/`168`/`720` are the 3-day/7-day/30-day views, expressed in hours so
+   * the request payload and the backend keep a single unit.
+   */
+  export type HistoryRangeHours = 2 | 6 | 12 | 24 | 72 | 168 | 720;
 
   export type RecentHistoryState =
     'charging' | 'discharging' | 'full' | 'idle' | 'unknown';
@@ -22,8 +26,14 @@
   /** Values are intentionally rendered only when the data layer explicitly supplies them. */
   export type RecentHistorySummary = {
     minimumPercentage?: number | null;
+    /** When the minimum was actually recorded; distinct from the last sample time. */
+    minimumPercentageAt?: Date | string | null;
     maximumPercentage?: number | null;
+    /** When the maximum was actually recorded. */
+    maximumPercentageAt?: Date | string | null;
     averagePercentage?: number | null;
+    /** The last persisted sample time the average was computed as of. */
+    averagePercentageAt?: Date | string | null;
     observedEnergyWh?: number | null;
   };
 
@@ -54,7 +64,26 @@
     onRangeChange = () => {},
   }: Props = $props();
 
-  const ranges: HistoryRangeHours[] = [2, 6, 12, 24];
+  const ranges: HistoryRangeHours[] = [2, 6, 12, 24, 72, 168, 720];
+
+  /** Compact button label: hours below a day, whole days at and beyond it. */
+  function rangeLabel(hours: HistoryRangeHours): string {
+    return hours < 24 ? `${hours}h` : `${hours / 24}d`;
+  }
+
+  /** A recorded-coverage duration that stays legible from minutes to weeks. */
+  function formatCoverageDuration(seconds: number): string {
+    const minutes = Math.floor(seconds / 60);
+    if (minutes < 60) return `${minutes} min`;
+    const hours = Math.floor(minutes / 60);
+    const remainderMinutes = minutes % 60;
+    if (hours < 24) {
+      return remainderMinutes > 0 ? `${hours}h ${remainderMinutes}m` : `${hours}h`;
+    }
+    const days = Math.floor(hours / 24);
+    const remainderHours = hours % 24;
+    return remainderHours > 0 ? `${days}d ${remainderHours}h` : `${days}d`;
+  }
   const width = 680;
   const height = 244;
   const padding = { top: 20, right: 20, bottom: 32, left: 42 };
@@ -120,10 +149,44 @@
     }).format(new Date(value));
   }
 
+  /**
+   * A bare hour like "7:07 PM" is ambiguous once a view spans more than a
+   * day: "Aug 24, 7:07 PM" keeps the x-axis legible across day boundaries.
+   */
+  function formatAxisLabel(value: number, range: HistoryRangeHours): string {
+    if (range <= 24) return formatTime(value);
+    return new Intl.DateTimeFormat(undefined, {
+      month: 'short',
+      day: 'numeric',
+      hour: 'numeric',
+      minute: '2-digit',
+    }).format(new Date(value));
+  }
+
+  /** Renders a recorded instant next to a summary value, or nothing when absent. */
+  function formatRecordedTime(value: Date | string | null | undefined): string | null {
+    if (value === null || value === undefined) return null;
+    const parsed = timestampMs(value);
+    return Number.isFinite(parsed) ? formatTime(parsed) : null;
+  }
+
+  /**
+   * Gaps are expected (sleep, shutdown, or history simply not going back that
+   * far yet) so the copy stays factual instead of reading as an alarm. Known
+   * backend-derived reasons get a specific, calm explanation; an unrecognized
+   * reason string is shown as-is rather than dropped.
+   */
   function gapDescription(gap: RecentHistoryGap): string {
-    return gap.reason
-      ? `Missing readings: ${gap.reason}`
-      : 'Missing readings in this interval';
+    switch (gap.reason) {
+      case 'rebooted':
+        return 'the computer restarted here';
+      case 'missing samples':
+        return 'no samples for a while, likely asleep or recording was paused';
+      case undefined:
+        return 'no samples were recorded here';
+      default:
+        return gap.reason;
+    }
   }
 
   let validPoints = $derived(
@@ -226,19 +289,55 @@
     );
   }
 
+  // Consecutive samples are frequently only a fraction of a pixel apart once
+  // a multi-hour range is compressed into a fixed-width chart (dozens of
+  // readings a minute over many hours). Emitting one <path> per adjacent
+  // pair used to look like a continuous line only when each pair happened to
+  // be several pixels wide; at sub-pixel spacing every independently
+  // rasterized two-point path renders as its own tiny antialiased speck, so
+  // the stroke reads as a trail of disconnected dots instead of one line.
+  // Building a single multi-point path per uninterrupted run fixes this: the
+  // renderer computes one continuous stroke outline for the whole run
+  // regardless of how close the individual samples are, while still
+  // starting a new path (and thus a real visual break) at every actual gap.
+  // A state change without a gap still needs its own color, so the run also
+  // breaks there -- but the boundary sample is repeated as the first point
+  // of the next run so the two runs still touch with no visible seam.
   let segments = $derived.by(() => {
     const result: PathSegment[] = [];
+    let run: ValidPoint[] = [];
 
-    for (let index = 1; index < validPoints.length; index += 1) {
-      const previous = validPoints[index - 1];
-      const current = validPoints[index];
-      if (hasGapBetween(previous, current)) continue;
-
-      result.push({
-        d: `M ${x(previous).toFixed(2)} ${y(previous.percentage).toFixed(2)} L ${x(current).toFixed(2)} ${y(current.percentage).toFixed(2)}`,
-        state: current.state,
-      });
+    function flushRun(): void {
+      if (run.length < 2) return;
+      const [head, ...rest] = run;
+      const d = [
+        `M ${x(head).toFixed(2)} ${y(head.percentage).toFixed(2)}`,
+        ...rest.map(
+          (point) => `L ${x(point).toFixed(2)} ${y(point.percentage).toFixed(2)}`,
+        ),
+      ].join(' ');
+      result.push({ d, state: run.at(-1)!.state });
     }
+
+    for (const point of validPoints) {
+      const previous = run.at(-1);
+      if (previous === undefined) {
+        run = [point];
+        continue;
+      }
+      if (hasGapBetween(previous, point)) {
+        flushRun();
+        run = [point];
+        continue;
+      }
+      if (point.state !== previous.state) {
+        flushRun();
+        run = [previous, point];
+        continue;
+      }
+      run.push(point);
+    }
+    flushRun();
 
     return result;
   });
@@ -290,7 +389,7 @@
         <button
           type="button"
           aria-pressed={selectedRange === range}
-          onclick={() => onRangeChange(range)}>{range}h</button
+          onclick={() => onRangeChange(range)}>{rangeLabel(range)}</button
         >
       {/each}
     </div>
@@ -302,15 +401,12 @@
     {#if persistedPoints.length}
       <p class="recent-history__coverage" role="status">
         <strong
-          >Recorded coverage: {Math.floor(coverageSeconds / 60)} minutes ({coveragePercentage}%
-          of this view).</strong
+          >{formatCoverageDuration(coverageSeconds)} recorded ({coveragePercentage}% of
+          this
+          {rangeLabel(selectedRange)} view){#if hasUnrecordedPrefix}, starting {formatDateTime(
+              firstPersistedTimestamp ?? rangeEndTimestamp,
+            )}{/if}.</strong
         >
-        {#if hasUnrecordedPrefix}
-          Recording began {formatDateTime(
-            firstPersistedTimestamp ?? rangeEndTimestamp,
-          )}; the earlier part of this {selectedRange}-hour view has no recorded
-          samples.
-        {/if}
         {#if observedPercentageRate !== null}
           Observed {observedState === 'charging' ? 'charge' : 'discharge'}: {Math.abs(
             observedPercentageChange ?? 0,
@@ -339,7 +435,10 @@
 
     {#if gaps.length}
       <div class="recent-history__gaps" role="status">
-        <strong>History has gaps.</strong>
+        <strong
+          >Gaps in this view (expected after sleep, restarts, or before recording
+          started):</strong
+        >
         {#each gaps as gap, index (`${timestampMs(gap.start)}-${timestampMs(gap.end)}-${index}`)}
           <span>{gapDescription(gap)}.</span>
         {/each}
@@ -355,6 +454,31 @@
         {validPoints.length} readings. Lines do not connect across {gaps.length} recorded
         gap{gaps.length === 1 ? '' : 's'}.
       </desc>
+      <defs>
+        <!-- A wide, honest gap (for example an overnight suspend spanning
+             most of the visible window) must stay clearly distinguishable
+             without turning into a heavy wall of warning color. A sparse
+             diagonal hatch reads as "no data here" at any width, whereas a
+             flat translucent fill gets visually denser the wider the gap
+             is, which is exactly backwards. -->
+        <pattern
+          id={`${id}-gap-hatch`}
+          width="8"
+          height="8"
+          patternTransform="rotate(45)"
+          patternUnits="userSpaceOnUse"
+        >
+          <line
+            x1="0"
+            y1="0"
+            x2="0"
+            y2="8"
+            stroke="var(--color-warning)"
+            stroke-width="3"
+            stroke-opacity="0.55"
+          />
+        </pattern>
+      </defs>
       {#each visibleGaps as gap (`${gap.start}-${gap.end}`)}
         <rect
           class="recent-history__gap-region"
@@ -362,6 +486,7 @@
           y={padding.top}
           width={Math.max(3, xTimestamp(gap.end) - xTimestamp(gap.start))}
           height={height - padding.top - padding.bottom}
+          fill={`url(#${id}-gap-hatch)`}
         >
           <title>{gap.label}</title>
         </rect>
@@ -377,19 +502,22 @@
         <text x={padding.left - 8} y={y(value) + 4} text-anchor="end">{value}%</text>
       {/each}
       <text x={padding.left} y={height - 8} text-anchor="start"
-        >{formatTime(firstTimestamp)}</text
+        >{formatAxisLabel(firstTimestamp, selectedRange)}</text
       >
       <text x={width - padding.right} y={height - 8} text-anchor="end"
-        >{formatTime(lastTimestamp)}</text
+        >{formatAxisLabel(lastTimestamp, selectedRange)}</text
       >
-      {#each segments as segment, index (`${segment.d}-${index}`)}
-        <path
-          class:recent-history__line--charging={segment.state === 'charging'}
-          class:recent-history__line--discharging={segment.state === 'discharging'}
-          class="recent-history__line"
-          d={segment.d}
-        />
-      {/each}
+      <!-- Point markers are drawn before the line, not after. At the sample
+           density a multi-hour recorder history reaches (dozens of readings
+           a minute, once compressed into a fixed-width chart), consecutive
+           markers sit less than a pixel apart; every later circle's
+           background-colored outline (`stroke: var(--color-surface)`) then
+           paints a ring over part of the previous circle and over the line
+           connecting them, punching a trail of tiny background-colored gaps
+           through what should read as one continuous stroke. Painting the
+           solid line stroke last covers that woven artifact wherever
+           samples are dense, while still leaving each marker's outline
+           visible wherever points are sparse enough not to overlap. -->
       {#each validPoints as point (`${point.timestampMs}-${point.persisted}`)}
         <circle
           class:recent-history__point--charging={point.state === 'charging'}
@@ -404,6 +532,14 @@
             >{`${formatPercentage(point.percentage)} · ${point.state} · ${point.persisted ? 'stored' : 'transient'}`}</title
           >
         </circle>
+      {/each}
+      {#each segments as segment, index (`${segment.d}-${index}`)}
+        <path
+          class:recent-history__line--charging={segment.state === 'charging'}
+          class:recent-history__line--discharging={segment.state === 'discharging'}
+          class="recent-history__line"
+          d={segment.d}
+        />
       {/each}
     </svg>
   {:else}
@@ -420,15 +556,36 @@
     <dl class="recent-history__summary" aria-label="Observed summary">
       {#if isProvided(summary.minimumPercentage)}<div>
           <dt>Minimum</dt>
-          <dd>{formatPercentage(summary.minimumPercentage)}</dd>
+          <dd>
+            {formatPercentage(summary.minimumPercentage)}
+            {#if formatRecordedTime(summary.minimumPercentageAt)}
+              <span class="recent-history__summary-time"
+                >at {formatRecordedTime(summary.minimumPercentageAt)}</span
+              >
+            {/if}
+          </dd>
         </div>{/if}
       {#if isProvided(summary.maximumPercentage)}<div>
           <dt>Maximum</dt>
-          <dd>{formatPercentage(summary.maximumPercentage)}</dd>
+          <dd>
+            {formatPercentage(summary.maximumPercentage)}
+            {#if formatRecordedTime(summary.maximumPercentageAt)}
+              <span class="recent-history__summary-time"
+                >at {formatRecordedTime(summary.maximumPercentageAt)}</span
+              >
+            {/if}
+          </dd>
         </div>{/if}
       {#if isProvided(summary.averagePercentage)}<div>
           <dt>Average</dt>
-          <dd>{formatPercentage(summary.averagePercentage)}</dd>
+          <dd>
+            {formatPercentage(summary.averagePercentage)}
+            {#if formatRecordedTime(summary.averagePercentageAt)}
+              <span class="recent-history__summary-time"
+                >as of {formatRecordedTime(summary.averagePercentageAt)}</span
+              >
+            {/if}
+          </dd>
         </div>{/if}
       {#if isProvided(summary.observedEnergyWh)}<div>
           <dt>Observed energy</dt>
@@ -566,7 +723,14 @@
     stroke-dasharray: 3 4;
   }
   .recent-history__gap-region {
-    fill: color-mix(in srgb, var(--color-warning), transparent 78%);
+    /* The fill itself is a diagonal hatch pattern (see the <defs> in the
+       markup) set via the element's `fill` attribute rather than here: a
+       flat translucent fill gets visually denser the wider a gap is, so a
+       single large real gap (for example an overnight suspend) reads as an
+       overwhelming solid block instead of a clearly-marked "no data" band.
+       A sparse hatch stays legible at any width. Do not set `fill` in this
+       rule; it would take precedence over the per-element pattern
+       reference. */
     stroke: var(--color-warning);
     stroke-width: 1;
     stroke-dasharray: 3 3;
@@ -638,6 +802,12 @@
     margin: 0.15rem 0 0;
     font-size: 0.9rem;
     font-weight: 700;
+  }
+  .recent-history__summary-time {
+    margin-left: 0.3rem;
+    color: var(--color-text-secondary);
+    font-size: 0.72rem;
+    font-weight: 500;
   }
   @media (max-width: 34rem) {
     .recent-history__header {

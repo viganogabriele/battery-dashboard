@@ -31,6 +31,8 @@ function numericSummary(value: number) {
     minimum: value - 1,
     maximum: value + 1,
     average: value,
+    minimumAt: '2026-08-23T11:58:00.000Z',
+    maximumAt: '2026-08-23T11:59:00.000Z',
     observedSamples: 3,
     source: 'derived' as const,
     availability: 'available' as const,
@@ -107,6 +109,13 @@ describe('normalizeRecentBatteryHistoryResponse', () => {
     expect(history.points[0]?.energyNowWh.source).toBe('sysfs');
     expect(history.points[1]?.powerWatts.value).toBe(-8.7);
     expect(history.summary.observedEnergyWh.change).toBe(-0.1);
+  });
+
+  it('preserves when the recorded minimum and maximum were observed', () => {
+    const history = normalizeRecentBatteryHistoryResponse(response());
+
+    expect(history.summary.percentage.minimumAt).toBe('2026-08-23T11:58:00.000Z');
+    expect(history.summary.percentage.maximumAt).toBe('2026-08-23T11:59:00.000Z');
   });
 
   it('preserves data gaps and unavailable readings without manufacturing zeroes', () => {
@@ -220,6 +229,18 @@ describe('normalizeRecentBatteryHistoryResponse', () => {
       batteryId: 'BAT1',
       rangeHours: 24,
       maxPoints: 480,
+    });
+  });
+
+  it('passes through the multi-day range windows unchanged', async () => {
+    const invoke = vi.fn().mockResolvedValue(response());
+    const client = createRecentBatteryHistoryClient(invoke);
+
+    await client.getRecentHistory({ rangeHours: 168, maxPoints: 720 });
+
+    expect(invoke).toHaveBeenCalledWith('get_recent_battery_history', {
+      rangeHours: 168,
+      maxPoints: 720,
     });
   });
 

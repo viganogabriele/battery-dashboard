@@ -11,15 +11,32 @@ sessions, calendar history, health/degradation, export, local anomalies, and
 manual `powerprofilesctl` controls are implemented. Version 1 is not release
 complete.
 
+A real-hardware polish session (2026-08-24) fixed several concrete bugs found
+by actually running the app and reading the user's own database — see
+`AGENTS.md`'s "Current status" for the list (UPower pending-state mapping,
+button contrast, dotted chart line, aggregate gap/completeness, Health-view
+capacity mismatch) — and added evidence-based observed-usage features
+(battery-life-on-a-full-charge, today-vs-yesterday, a historically-derived
+live runtime forecast distinct from UPower's own estimate), longer history
+ranges (3d/7d/30d), restyled selects, and a general copy-noise cleanup. Do not
+assume any of that is still outstanding; verify against the current code
+instead of this note before redoing it.
+
 Open work, in order:
 
-1. validate recorder/update/data-preservation behavior and real hardware;
-2. improve useful observed answers: today versus yesterday, duration by
-   starting-charge band, charge/discharge curves, evidence and coverage;
-3. finish responsive UX at Hyprland tiled sizes without periodic layout hitches;
-4. automate per-user install/update/uninstall/purge and add an Arch packaging
+1. give Sessions and History a dedicated comprehensibility pass — a real user
+   reported "I don't understand anything" about both views; they are
+   functional but were never redesigned for clarity (labels, grouping, date
+   context beyond what the 2026-08-24 session added);
+2. validate recorder/update/data-preservation behavior and real hardware;
+3. keep improving useful observed answers: charge/discharge curves, more
+   evidence/coverage detail;
+4. finish responsive UX at Hyprland tiled sizes without periodic layout hitches
+   (spot-checked repeatedly during the 2026-08-24 session with no issues found
+   beyond what was fixed, but not a formal sign-off);
+5. automate per-user install/update/uninstall/purge and add an Arch packaging
    path;
-5. only then add notifications, investigate per-process impact, or build the
+6. only then add notifications, investigate per-process impact, or build the
    optional Omarchy plugin.
 
 The detailed implementation audit and acceptance criteria are in

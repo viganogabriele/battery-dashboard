@@ -48,7 +48,7 @@
     display: grid;
     min-height: 8.5rem;
     border: 1px solid var(--color-border-subtle);
-    border-radius: 1rem;
+    border-radius: var(--radius-card);
     padding: 1rem;
     background: var(--color-surface);
   }

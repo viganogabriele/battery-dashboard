@@ -145,9 +145,51 @@ describe('battery dashboard presentation components', () => {
       ],
     });
 
-    expect(screen.getByText('History has gaps.')).toBeTruthy();
+    expect(screen.getByText(/Gaps in this view/)).toBeTruthy();
     expect(screen.getAllByText(/computer was suspended/)).toHaveLength(2);
     expect(document.querySelectorAll('.recent-history__line')).toHaveLength(0);
+  });
+
+  it('explains known gap reasons in calm, specific terms instead of a generic alarm', () => {
+    render(RecentHistoryChart, {
+      recorderState: 'enabled',
+      points: [
+        {
+          timestamp: '2026-01-01T09:00:00Z',
+          percentage: 70,
+          state: 'discharging',
+          persisted: true,
+        },
+        {
+          timestamp: '2026-01-01T10:00:00Z',
+          percentage: 68,
+          state: 'discharging',
+          persisted: true,
+        },
+      ],
+      gaps: [
+        {
+          start: '2026-01-01T09:10:00Z',
+          end: '2026-01-01T09:20:00Z',
+          reason: 'rebooted',
+        },
+        {
+          start: '2026-01-01T09:30:00Z',
+          end: '2026-01-01T09:50:00Z',
+          reason: 'missing samples',
+        },
+      ],
+    });
+
+    expect(screen.queryByText(/History has gaps\.$/)).toBeNull();
+    expect(screen.getAllByText(/the computer restarted here/).length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.getAllByText(
+        /no samples for a while, likely asleep or recording was paused/,
+      ).length,
+    ).toBeGreaterThan(0);
   });
 
   it('reports a chosen range and only renders explicitly supplied summary values', async () => {
@@ -174,6 +216,104 @@ describe('battery dashboard presentation components', () => {
     expect(screen.getByText('3.4 Wh')).toBeTruthy();
     expect(screen.queryByText('Average')).toBeNull();
     expect(screen.getByText('Transient live readings are shown.')).toBeTruthy();
+  });
+
+  it('offers multi-day range buttons and reports their hour values', async () => {
+    const onRangeChange = vi.fn();
+    render(RecentHistoryChart, {
+      recorderState: 'enabled',
+      selectedRange: 24,
+      onRangeChange,
+      points: [
+        {
+          timestamp: '2026-01-01T09:00:00Z',
+          percentage: 70,
+          state: 'charging',
+          persisted: true,
+        },
+      ],
+    });
+
+    expect(screen.getByRole('button', { name: '3d' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '7d' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: '30d' })).toBeTruthy();
+
+    await fireEvent.click(screen.getByRole('button', { name: '7d' }));
+    expect(onRangeChange).toHaveBeenCalledWith(168);
+
+    await fireEvent.click(screen.getByRole('button', { name: '30d' }));
+    expect(onRangeChange).toHaveBeenCalledWith(720);
+  });
+
+  it('labels the chart x-axis with date context once the range spans multiple days', () => {
+    render(RecentHistoryChart, {
+      recorderState: 'enabled',
+      selectedRange: 168,
+      points: [
+        {
+          timestamp: '2026-01-01T09:00:00Z',
+          percentage: 70,
+          state: 'discharging',
+          persisted: true,
+        },
+        {
+          timestamp: '2026-01-07T09:00:00Z',
+          percentage: 60,
+          state: 'discharging',
+          persisted: true,
+        },
+      ],
+    });
+
+    const axisText = Array.from(document.querySelectorAll('svg text'))
+      .map((node) => node.textContent ?? '')
+      .join(' ');
+    expect(axisText).toMatch(/Jan/);
+  });
+
+  it('shows when the recorded minimum and maximum actually happened', () => {
+    render(RecentHistoryChart, {
+      recorderState: 'enabled',
+      points: [
+        {
+          timestamp: '2026-01-01T09:00:00Z',
+          percentage: 70,
+          state: 'discharging',
+          persisted: true,
+        },
+      ],
+      summary: {
+        minimumPercentage: 15,
+        minimumPercentageAt: '2026-01-01T00:34:00Z',
+        maximumPercentage: 99,
+        maximumPercentageAt: '2026-01-01T14:43:00Z',
+        averagePercentage: 66,
+        averagePercentageAt: '2026-01-01T16:50:00Z',
+      },
+    });
+
+    expect(screen.getByText('15%')).toBeTruthy();
+    expect(screen.getByText('99%')).toBeTruthy();
+    expect(screen.getAllByText(/^at /)).toHaveLength(2);
+    expect(screen.getByText(/^as of /)).toBeTruthy();
+  });
+
+  it('omits the recorded-time annotation when no timestamp was supplied', () => {
+    render(RecentHistoryChart, {
+      recorderState: 'enabled',
+      points: [
+        {
+          timestamp: '2026-01-01T09:00:00Z',
+          percentage: 70,
+          state: 'discharging',
+          persisted: true,
+        },
+      ],
+      summary: { minimumPercentage: 65 },
+    });
+
+    expect(screen.getByText('65%')).toBeTruthy();
+    expect(screen.queryByText(/^at /)).toBeNull();
   });
 
   it('uses a labelled observed range so small real charge changes stay visible', () => {
@@ -265,6 +405,9 @@ describe('battery dashboard presentation components', () => {
     expect(screen.getAllByText('2h 0m')).toHaveLength(2);
     expect(screen.getAllByText('100% → 12%')).toHaveLength(2);
     expect(screen.getAllByText('22% → 100%')).toHaveLength(1);
+    // Each "observed answer" summary card names the calendar day it happened,
+    // not just a duration and a percentage range with no date context.
+    expect(screen.getAllByText(/Thu, Jan 1, 2026/).length).toBeGreaterThan(0);
   });
 
   it('keeps unavailable calendar values unavailable and changes aggregation', async () => {
@@ -318,6 +461,8 @@ describe('battery dashboard presentation components', () => {
     render(HealthView, {
       currentFullCapacityWh: 45,
       designCapacityWh: 50,
+      healthPercentage: 90,
+      healthRecordedAt: '2026-02-01T09:00:00Z',
       hardwareCycleCount: 120,
       trend: 'stable',
       capacityHistory: [
@@ -332,6 +477,23 @@ describe('battery dashboard presentation components', () => {
     expect(
       screen.getByRole('img', { name: /Capacity history with 2 recorded readings/ }),
     ).toBeTruthy();
+    // The health percentage always comes from the backend's same-sample pair,
+    // never from dividing two independently-latest capacity readings.
+    expect(screen.getByText(/currently holds about 45\.0 Wh/)).toBeTruthy();
+  });
+
+  it('never derives health from independently-latest capacity readings', () => {
+    // currentFullCapacityWh and designCapacityWh alone would divide to 90%,
+    // but no healthPercentage was supplied (the two capacities were not
+    // observed together), so the health metric must stay honestly unavailable
+    // rather than presenting an unearned ratio.
+    render(HealthView, {
+      currentFullCapacityWh: 45,
+      designCapacityWh: 50,
+      trend: 'insufficient',
+    });
+
+    expect(screen.queryByText('90.0%')).toBeNull();
   });
 
   it('keeps unavailable health and unsupported cycles distinct, with explicit inconclusive states', () => {

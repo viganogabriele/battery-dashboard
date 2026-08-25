@@ -29,7 +29,23 @@ Current status:
 - phase 8 core functionality exists, but version 1 release validation and
   packaging are incomplete;
 - local anomaly analysis and explicit `powerprofilesctl` controls exist;
+- a real-hardware polish pass (2026-08-24) fixed a UPower state-mapping bug
+  (`PendingCharge`/`PendingDischarge` were shown as active charging/
+  discharging), an unreadable-button contrast bug, a chart line that
+  rendered as disconnected dots instead of a stroked line, an aggregate
+  gap/completeness bug caused by a non-reporting peripheral "battery", and a
+  Health-view bug that discarded the backend's own paired capacity reading
+  in favor of two independently-latest samples; it also added an
+  evidence-based "estimated battery life on a full charge" card, a
+  historically-derived live runtime forecast (`get_runtime_forecast`,
+  distinct from any UPower estimate), a today-vs-yesterday usage summary,
+  extended history ranges to 3d/7d/30d, restyled native `<select>` controls
+  (the open dropdown's own popup chrome is a documented WebKitGTK/GTK3
+  platform limitation that page CSS cannot reach), and removed redundant/
+  unhelpful copy;
 - notifications, per-process impact, and the Omarchy plugin do not exist;
+- the Sessions and History views are functional but have not had a
+  dedicated comprehensibility/UX pass (the next priority — see below);
 - the application is a working beta, not a finished 1.0 release;
 - the next priorities are listed in `DEVELOPMENT_PLAN.md` section 23.2.
 

@@ -149,7 +149,7 @@
   .recorder-settings {
     border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-card);
-    padding: 1.1rem;
+    padding: 1.25rem;
     background: var(--color-surface);
   }
 
@@ -213,7 +213,7 @@
     border: 1px solid color-mix(in srgb, var(--color-accent), transparent 32%);
     border-radius: 0.6rem;
     padding: 0.55rem 0.75rem;
-    color: var(--color-accent-contrast, #fff);
+    color: var(--color-accent-ink);
     background: var(--color-accent);
     font: inherit;
     font-size: 0.88rem;

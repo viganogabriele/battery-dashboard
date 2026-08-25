@@ -10,7 +10,20 @@
   type Props = {
     id?: string;
     currentFullCapacityWh?: number | null;
+    currentFullCapacityRecordedAt?: Date | string | null;
     designCapacityWh?: number | null;
+    designCapacityRecordedAt?: Date | string | null;
+    /**
+     * The health ratio as computed by the backend from one sample where both
+     * capacities were observed together. This is intentionally a separate
+     * input from the two capacity values above: those can each be the most
+     * recently *seen* reading of that metric alone, which is not always the
+     * same sample. Dividing two independently-latest readings could combine
+     * numbers that were never actually observed at the same instant, so the
+     * displayed percentage always comes from this paired value instead.
+     */
+    healthPercentage?: number | null;
+    healthRecordedAt?: Date | string | null;
     hardwareCycleCount?: number | null;
     capacityHistory?: readonly CapacityHistoryPoint[];
     trend?: CapacityTrend;
@@ -19,7 +32,11 @@
   let {
     id = 'battery-health',
     currentFullCapacityWh = null,
+    currentFullCapacityRecordedAt = null,
     designCapacityWh = null,
+    designCapacityRecordedAt = null,
+    healthPercentage = null,
+    healthRecordedAt = null,
     hardwareCycleCount = null,
     capacityHistory = [],
     trend = 'insufficient',
@@ -31,24 +48,71 @@
     point: CapacityHistoryPoint,
   ): point is CapacityHistoryPoint & { fullCapacityWh: number } =>
     available(point.fullCapacityWh);
-  const healthPercent = $derived(
+  const healthPercent = $derived(available(healthPercentage) ? healthPercentage : null);
+  const capacityLostWh = $derived(
     available(currentFullCapacityWh) &&
       available(designCapacityWh) &&
-      designCapacityWh > 0
-      ? (currentFullCapacityWh / designCapacityWh) * 100
+      healthPercent !== null
+      ? Math.max(0, designCapacityWh - currentFullCapacityWh)
       : null,
   );
+  const dayFormatter = new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+  });
+  function formatDay(value: Date | string | null | undefined): string | null {
+    if (value === null || value === undefined) return null;
+    const date = new Date(value);
+    return Number.isFinite(date.getTime()) ? dayFormatter.format(date) : null;
+  }
   const plottedPoints = $derived(capacityHistory.filter(hasCapacity));
+  // Full-capacity readings rarely change from one sample to the next (the
+  // hardware only recalibrates occasionally), so a raw one-row-per-sample
+  // table would mostly repeat the same number hundreds of times. Collapsing
+  // consecutive identical readings into a single range row keeps every
+  // distinct observation visible without the wall of duplicates.
+  type CollapsedCapacityRow = {
+    fullCapacityWh: number;
+    firstRecordedAt: Date | string;
+    lastRecordedAt: Date | string;
+    readingCount: number;
+  };
+  const collapsedHistoryRows = $derived.by(() => {
+    const rows: CollapsedCapacityRow[] = [];
+    for (const point of plottedPoints) {
+      const last = rows.at(-1);
+      if (last && last.fullCapacityWh === point.fullCapacityWh) {
+        last.lastRecordedAt = point.timestamp;
+        last.readingCount += 1;
+      } else {
+        rows.push({
+          fullCapacityWh: point.fullCapacityWh,
+          firstRecordedAt: point.timestamp,
+          lastRecordedAt: point.timestamp,
+          readingCount: 1,
+        });
+      }
+    }
+    return rows;
+  });
   const chartValues = $derived(plottedPoints.map((point) => point.fullCapacityWh));
   const chartMin = $derived(Math.min(...chartValues));
   const chartMax = $derived(Math.max(...chartValues));
-  const chartRange = $derived(chartMax - chartMin || 1);
+  const chartRange = $derived(chartMax - chartMin);
+  // When every recorded reading is numerically identical (a stable battery
+  // with no observed capacity change yet, or a single reading), there is no
+  // real range to scale against. Falling back to a range of 1 would still
+  // compute every point at the very bottom edge of the plot (y = 100),
+  // which reads as capacity having crashed to zero rather than "stable".
+  // Centering the line instead gives an honest "flat" reading.
   const chartPath = $derived(
     plottedPoints
       .map((point, index) => {
         const x =
           plottedPoints.length === 1 ? 50 : (index / (plottedPoints.length - 1)) * 100;
-        const y = 100 - ((point.fullCapacityWh - chartMin) / chartRange) * 100;
+        const y =
+          chartRange === 0
+            ? 50
+            : 100 - ((point.fullCapacityWh - chartMin) / chartRange) * 100;
         return `${index === 0 ? 'M' : 'L'} ${x} ${y}`;
       })
       .join(' '),
@@ -88,24 +152,37 @@
 
   <dl class="health-view__metrics">
     <div>
+      <dt>Design capacity (new)</dt>
+      <dd>
+        {available(designCapacityWh)
+          ? `${designCapacityWh.toFixed(1)} Wh`
+          : 'Unavailable'}
+      </dd>
+      {#if formatDay(designCapacityRecordedAt)}
+        <p class="health-view__metric-note">
+          as of {formatDay(designCapacityRecordedAt)}
+        </p>
+      {/if}
+    </div>
+    <div>
       <dt>Current maximum capacity</dt>
       <dd>
         {available(currentFullCapacityWh)
           ? `${currentFullCapacityWh.toFixed(1)} Wh`
           : 'Unavailable'}
       </dd>
-    </div>
-    <div>
-      <dt>Design capacity</dt>
-      <dd>
-        {available(designCapacityWh)
-          ? `${designCapacityWh.toFixed(1)} Wh`
-          : 'Unavailable'}
-      </dd>
+      {#if formatDay(currentFullCapacityRecordedAt)}
+        <p class="health-view__metric-note">
+          as of {formatDay(currentFullCapacityRecordedAt)}
+        </p>
+      {/if}
     </div>
     <div>
       <dt>Health</dt>
       <dd>{healthPercent === null ? 'Unavailable' : `${healthPercent.toFixed(1)}%`}</dd>
+      {#if formatDay(healthRecordedAt)}
+        <p class="health-view__metric-note">as of {formatDay(healthRecordedAt)}</p>
+      {/if}
     </div>
     <div>
       <dt>Hardware cycle count</dt>
@@ -114,8 +191,26 @@
           ? Math.round(hardwareCycleCount)
           : 'Not supported by this battery'}
       </dd>
+      {#if available(hardwareCycleCount) && Math.round(hardwareCycleCount) === 0}
+        <p class="health-view__metric-note">
+          Some laptops never implement this counter and always report 0, so this does
+          not necessarily mean the battery is unused.
+        </p>
+      {/if}
     </div>
   </dl>
+
+  {#if healthPercent !== null && capacityLostWh !== null}
+    <p class="health-view__plain-language">
+      This battery currently holds about {currentFullCapacityWh?.toFixed(1)} Wh out of its
+      {designCapacityWh?.toFixed(1)} Wh original capacity — {capacityLostWh.toFixed(1)} Wh
+      ({(100 - healthPercent).toFixed(0)}%) less than new. Losing 15–20% or more of the
+      original capacity within the first couple of years of regular daily use is common
+      for laptop batteries and is not by itself a sign of a fault; a health reading only
+      becomes concerning when it keeps dropping quickly, which is what the trend below
+      tracks.
+    </p>
+  {/if}
 
   <section class="health-view__history" aria-labelledby={`${id}-history-title`}>
     <div class="health-view__history-heading">
@@ -134,6 +229,11 @@
         No recorded capacity history is available.
       </div>
     {:else}
+      <p class="health-view__confidence">
+        Based on {plottedPoints.length} recorded reading{plottedPoints.length === 1
+          ? ''
+          : 's'}, starting {formatDay(plottedPoints[0].timestamp)}.
+      </p>
       <svg
         class="health-view__chart"
         viewBox="0 0 100 100"
@@ -150,14 +250,20 @@
       <table>
         <caption>Recorded capacity history</caption>
         <thead
-          ><tr><th scope="col">Recorded</th><th scope="col">Maximum capacity</th></tr
+          ><tr
+            ><th scope="col">Recorded</th><th scope="col">Maximum capacity</th><th
+              scope="col">Readings</th
+            ></tr
           ></thead
         >
         <tbody>
-          {#each plottedPoints as point (`${point.timestamp}`)}
+          {#each collapsedHistoryRows as row (`${row.firstRecordedAt}-${row.fullCapacityWh}`)}
             <tr
-              ><th scope="row">{new Date(point.timestamp).toLocaleDateString()}</th><td
-                >{point.fullCapacityWh.toFixed(1)} Wh</td
+              ><th scope="row"
+                >{formatDay(row.firstRecordedAt)}{row.readingCount > 1
+                  ? ` – ${formatDay(row.lastRecordedAt)}`
+                  : ''}</th
+              ><td>{row.fullCapacityWh.toFixed(1)} Wh</td><td>{row.readingCount}</td
               ></tr
             >
           {/each}
@@ -199,6 +305,25 @@
     color: var(--color-text-secondary);
     font-size: 0.88rem;
     line-height: 1.45;
+  }
+  .health-view__metric-note {
+    margin: 0.3rem 0 0;
+    color: color-mix(in srgb, var(--color-text-secondary), transparent 15%);
+    font-size: 0.68rem;
+    font-weight: 500;
+    line-height: 1.35;
+  }
+  .health-view__plain-language {
+    max-width: 68ch;
+    margin-top: 0.9rem;
+    color: var(--color-text-secondary);
+    font-size: 0.86rem;
+    line-height: 1.5;
+  }
+  .health-view__confidence {
+    margin-top: 0.6rem;
+    color: var(--color-text-secondary);
+    font-size: 0.78rem;
   }
   .health-view__metrics {
     display: grid;
@@ -271,6 +396,7 @@
   }
   .health-view__chart {
     display: block;
+    overflow: visible;
     width: 100%;
     height: 8rem;
     margin-top: 0.8rem;

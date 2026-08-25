@@ -245,6 +245,11 @@
     border-radius: 0.55rem;
     padding: 0.45rem 0.55rem;
     color: var(--color-text-primary);
+  }
+  .calendar-history__filters select {
+    background-color: var(--color-surface-raised);
+  }
+  .calendar-history__filters input {
     background: var(--color-surface-raised);
   }
   .calendar-history__placeholder {

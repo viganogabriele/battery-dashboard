@@ -5,8 +5,12 @@ import type {
   MetricSource,
 } from '../domain/battery';
 
-/** The fixed windows supported by the first recent-history dashboard. */
-export type RecentHistoryRangeHours = 2 | 6 | 12 | 24;
+/**
+ * The fixed windows supported by the recent-history dashboard chart.
+ * `72`/`168`/`720` are the 3-day/7-day/30-day views, expressed in hours so
+ * the backend and the request payload keep a single unit.
+ */
+export type RecentHistoryRangeHours = 2 | 6 | 12 | 24 | 72 | 168 | 720;
 
 /** Request passed to the `get_recent_battery_history` desktop command. */
 export interface RecentBatteryHistoryRequest {
@@ -83,6 +87,10 @@ export interface NumericHistorySummaryResponseDto {
   minimum: number | null;
   maximum: number | null;
   average: number | null;
+  /** When the recorded minimum was actually observed, not merely the last sample time. */
+  minimumAt: string | null;
+  /** When the recorded maximum was actually observed. */
+  maximumAt: string | null;
   observedSamples: number;
   source: 'derived' | 'unavailable';
   availability: MetricAvailability;
@@ -138,6 +146,8 @@ export interface NumericHistorySummary {
   minimum: number | null;
   maximum: number | null;
   average: number | null;
+  minimumAt: string | null;
+  maximumAt: string | null;
   observedSamples: number;
   source: 'derived' | 'unavailable';
   availability: MetricAvailability;
@@ -357,6 +367,8 @@ function unavailableNumericSummary(observedSamples: number): NumericHistorySumma
     minimum: null,
     maximum: null,
     average: null,
+    minimumAt: null,
+    maximumAt: null,
     observedSamples,
     source: 'unavailable',
     availability: 'unavailable',

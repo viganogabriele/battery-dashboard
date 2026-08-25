@@ -665,8 +665,8 @@ Current product status:
 | Live battery data | Implemented and locally exercised | UPower/sysfs merge, provenance, missing values, multiple batteries | Test a broader matrix of Arch laptops and document observed driver quirks |
 | Recorder and SQLite | Implemented and locally exercised | Opt-in 60-second systemd user timer, one-shot recorder, migrations, gaps, preserved history | Automated install/update/disable/uninstall/purge acceptance test |
 | Dashboard and recent chart | Implemented, UX still in progress | Real current metrics, adaptive chart, explicit coverage and real gaps, manual refresh | Remove remaining density/layout problems at small tiled sizes; design a smooth low-cost live update that does not re-query every screen or cause layout hitches |
-| Sessions and calendar history | Implemented | Complete/incomplete sessions, boundary reasons, daily/weekly/monthly summaries, date/state/battery filters | Improve practical comparisons such as today versus yesterday and make low-coverage periods easier to interpret |
-| Observed battery answers | Partial | Longest completed discharge, near-full discharge, and completed charge-to-full summaries | Add evidence-based duration by starting-charge bands, charging curves, discharge curves, sample counts, and confidence/coverage; never extrapolate from insufficient history |
+| Sessions and calendar history | Implemented | Complete/incomplete sessions, boundary reasons, daily/weekly/monthly summaries, date/state/battery filters, an evidence-based today-versus-yesterday observed-usage comparison (`get_today_vs_yesterday_usage`) | Make low-coverage periods easier to interpret elsewhere in the calendar views |
+| Observed battery answers | Partial | Longest completed discharge, near-full discharge, completed charge-to-full summaries, and a today-versus-yesterday coverage/charge/energy/average-power comparison that never joins across suspend/reboot/battery-removal gaps | Add evidence-based duration by starting-charge bands, charging curves, discharge curves, sample counts, and confidence/coverage; never extrapolate from insufficient history |
 | Health and degradation | Implemented | Full/design capacity, health, hardware cycles, capacity history, conservative trend | Long-duration real-hardware validation and clearer explanations when firmware omits fields |
 | Export | Implemented | Raw/session/summary CSV and JSON, atomic writes, privacy-safe fields | Better destination selection UX, end-to-end round-trip checks, and release documentation examples |
 | Anomalies | Partial advanced feature | Local unusual-power, rapid-discharge, and interrupted-charge analysis | Real-history tuning, false-positive review, opt-in presentation, and clearer confidence wording |
@@ -691,8 +691,13 @@ priority:
    - keep unavailable values unavailable and identify every estimate as either
      source-provided or historically derived.
 2. **Useful battery answers**
-   - summarize today and yesterday using recorded duration, charge change,
-     energy change, average draw, and coverage;
+   - done: summarize today and yesterday using recorded duration, charge
+     change, energy change, average draw, and coverage (`get_today_vs_yesterday_usage`
+     in `src-tauri/src/storage/mod.rs` and `src-tauri/src/main.rs`, surfaced on
+     the Sessions view via `TodayVsYesterdayCard.svelte`); each day is marked
+     with insufficient evidence rather than estimated when recording is off,
+     samples are too few, or the day has barely started, and a fresh install's
+     nonexistent "yesterday" is reported the same way;
    - build observed charge/discharge curves and duration distributions by
      starting percentage bands;
    - estimate time to full or remaining runtime only when a minimum evidence
@@ -1148,7 +1153,6 @@ the relevant implementation or release phase:
 - final public product name and icon;
 - reverse-domain Tauri bundle identifier;
 - public repository owner/namespace;
-- open-source license;
 - exact AUR package name;
 - which non-Arch distributions become officially tested targets;
 - whether the optional Omarchy integration is kept in this repository or moved

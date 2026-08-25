@@ -144,7 +144,7 @@
   .insights-view {
     border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-card);
-    padding: 1.1rem;
+    padding: 1.25rem;
     background: var(--color-surface);
   }
   .insights-view__header {

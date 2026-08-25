@@ -86,7 +86,7 @@
     align-items: start;
     border: 1px solid var(--color-border-subtle);
     border-radius: var(--radius-card);
-    padding: 1.1rem;
+    padding: 1.25rem;
     background: var(--color-surface);
   }
   .export-controls__eyebrow,
@@ -133,12 +133,15 @@
     border: 1px solid var(--color-border-subtle);
     border-radius: 0.55rem;
     padding: 0.48rem 0.6rem;
+  }
+  button {
     background: var(--color-surface-raised);
   }
   select {
     width: 100%;
     min-width: 0;
     color: var(--color-text-primary);
+    background-color: var(--color-surface-raised);
   }
   .export-controls__destination {
     flex-basis: 15rem;

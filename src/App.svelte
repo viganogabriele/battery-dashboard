@@ -2,6 +2,7 @@
   import { onMount } from 'svelte';
   import { SvelteDate } from 'svelte/reactivity';
 
+  import BatteryLifeCard from './lib/components/BatteryLifeCard.svelte';
   import BatterySelector from './lib/components/BatterySelector.svelte';
   import BatteryStateBadge from './lib/components/BatteryStateBadge.svelte';
   import CalendarHistoryView from './lib/components/CalendarHistoryView.svelte';
@@ -23,7 +24,9 @@
   } from './lib/components/RecentHistoryChart.svelte';
   import RecorderSettings from './lib/components/RecorderSettings.svelte';
   import SessionsView from './lib/components/SessionsView.svelte';
+  import TodayVsYesterdayCard from './lib/components/TodayVsYesterdayCard.svelte';
   import { isMetricAvailable, type Metric } from './lib/domain/battery';
+  import { formatCalendarBucket } from './lib/formatters';
   import SectionNavigation from './lib/navigation/SectionNavigation.svelte';
   import {
     defaultProductSection,
@@ -41,6 +44,18 @@
     type RecentBatteryHistoryData,
     type RecentHistoryRangeHours,
   } from './lib/services/recent-history-client';
+  import {
+    createDesktopDayUsageClient,
+    type DayUsageComparisonData,
+  } from './lib/services/day-usage-client';
+  import {
+    createDesktopBatteryLifeClient,
+    type BatteryLifeEstimate,
+  } from './lib/services/battery-life-client';
+  import {
+    createDesktopRuntimeForecastClient,
+    type RuntimeForecast,
+  } from './lib/services/runtime-forecast-client';
   import {
     createDesktopSessionHistoryClient,
     type BatterySessionHistoryData,
@@ -111,6 +126,15 @@
   let sessionHistory = $state<BatterySessionHistoryData | null>(null);
   let isRefreshingSessions = $state(false);
   let isRebuildingSessions = $state(false);
+  const dayUsageClient = createDesktopDayUsageClient();
+  let dayUsageComparison = $state<DayUsageComparisonData | null>(null);
+  let isRefreshingDayUsage = $state(false);
+  const batteryLifeClient = createDesktopBatteryLifeClient();
+  let batteryLife = $state<BatteryLifeEstimate | null>(null);
+  let isRefreshingBatteryLife = $state(false);
+  const runtimeForecastClient = createDesktopRuntimeForecastClient();
+  let runtimeForecast = $state<RuntimeForecast | null>(null);
+  let isRefreshingRuntimeForecast = $state(false);
   let sessionStateFilter = $state<
     'all' | 'charging' | 'discharging' | 'full' | 'unknown'
   >('all');
@@ -172,8 +196,11 @@
     recentHistory
       ? {
           minimumPercentage: recentHistory.summary.percentage.minimum,
+          minimumPercentageAt: recentHistory.summary.percentage.minimumAt,
           maximumPercentage: recentHistory.summary.percentage.maximum,
+          maximumPercentageAt: recentHistory.summary.percentage.maximumAt,
           averagePercentage: recentHistory.summary.percentage.average,
+          averagePercentageAt: recentHistory.summary.percentage.observedAt,
           observedEnergyWh: recentHistory.summary.observedEnergyWh.change,
         }
       : null,
@@ -184,15 +211,49 @@
     if (recentHistory?.unavailableReason === 'database-unavailable') return 'error';
     return 'enabled';
   });
+  /** Historically-derived forecast presentation: an honest caveat when the
+   * evidence policy is not met, distinct from the raw UPower estimate shown
+   * separately alongside it. */
+  let runtimeForecastSummary = $derived.by(() => {
+    if (!runtimeForecast) {
+      return {
+        primary: isRefreshingRuntimeForecast ? 'Loading…' : 'Not available yet',
+        clock: null,
+      };
+    }
+    if (runtimeForecast.availability === 'not-applicable') {
+      return { primary: 'Nothing to forecast right now', clock: null };
+    }
+    if (runtimeForecast.availability === 'unavailable') {
+      return { primary: 'Not available', clock: null };
+    }
+    if (runtimeForecast.evidence === 'insufficient') {
+      return {
+        primary: 'Not enough recorded history at this charge level yet',
+        clock: null,
+      };
+    }
+    return {
+      primary:
+        formatForecastDuration(runtimeForecast.estimatedMinutesRemaining) ??
+        'Not available',
+      clock: formatForecastClockTime(runtimeForecast.estimatedAt),
+    };
+  });
 
   function selectBattery(id: string) {
     selectedBatteryId = id;
     if (isLiveData && (activeSection === 'dashboard' || activeSection === 'chart')) {
       void refreshRecentHistory(id);
     }
+    if (isLiveData && activeSection === 'dashboard') {
+      void refreshBatteryLife(id);
+      void refreshRuntimeForecast(id);
+    }
     if (isLiveData && (activeSection === 'sessions' || activeSection === 'history')) {
       void refreshSessionHistory(id);
     }
+    if (isLiveData && activeSection === 'sessions') void refreshDayUsage(id);
     if (isLiveData && activeSection === 'health') void refreshBatteryHealth(id);
     if (isLiveData && activeSection === 'insights') void refreshAnomalies(id);
   }
@@ -202,8 +263,13 @@
     if (isLiveData && (section === 'sessions' || section === 'history')) {
       void refreshSessionHistory();
     }
+    if (isLiveData && section === 'sessions') void refreshDayUsage();
     if (isLiveData && (section === 'dashboard' || section === 'chart')) {
       void refreshRecentHistory();
+    }
+    if (isLiveData && section === 'dashboard') {
+      void refreshBatteryLife();
+      void refreshRuntimeForecast();
     }
     if (isLiveData && section === 'health') {
       void refreshBatteryHealth();
@@ -267,6 +333,61 @@
     if (isLiveData) void refreshSessionHistory();
   }
 
+  async function refreshDayUsage(batteryId = selectedBatteryId) {
+    if (isRefreshingDayUsage) return;
+    isRefreshingDayUsage = true;
+    try {
+      dayUsageComparison = await dayUsageClient.getTodayVsYesterday({
+        batteryId: batteryId === 'all-batteries' ? undefined : batteryId,
+        timezone: timezone(),
+      });
+    } catch {
+      dayUsageComparison = null;
+    } finally {
+      isRefreshingDayUsage = false;
+    }
+  }
+
+  async function refreshBatteryLife(batteryId = selectedBatteryId) {
+    if (isRefreshingBatteryLife) return;
+    isRefreshingBatteryLife = true;
+    try {
+      batteryLife = await batteryLifeClient.getBatteryLifeEstimate({
+        batteryId: batteryId === 'all-batteries' ? undefined : batteryId,
+      });
+    } catch {
+      batteryLife = null;
+    } finally {
+      isRefreshingBatteryLife = false;
+    }
+  }
+
+  /** Live, current-moment "when will it run out/finish charging" forecast —
+   * distinct from `batteryLife` (typical full-charge duration) and from the
+   * raw UPower `timeRemainingMinutes` shown alongside it in the hero. Only
+   * meaningful while the selected snapshot is charging or discharging; the
+   * command itself reports `not-applicable` otherwise. */
+  async function refreshRuntimeForecast(batteryId = selectedBatteryId) {
+    if (isRefreshingRuntimeForecast) return;
+    const snapshot = selectedSnapshot;
+    if (!snapshot || !isMetricAvailable(snapshot.percentage)) {
+      runtimeForecast = null;
+      return;
+    }
+    isRefreshingRuntimeForecast = true;
+    try {
+      runtimeForecast = await runtimeForecastClient.getRuntimeForecast({
+        batteryId: batteryId === 'all-batteries' ? undefined : batteryId,
+        state: snapshot.state,
+        currentPercentage: snapshot.percentage.value,
+      });
+    } catch {
+      runtimeForecast = null;
+    } finally {
+      isRefreshingRuntimeForecast = false;
+    }
+  }
+
   async function rebuildSessions() {
     if (isRebuildingSessions) return;
     isRebuildingSessions = true;
@@ -316,11 +437,18 @@
       // of them with every live hardware poll makes a tiled WebKit window
       // visibly hitch, while the recorder only adds one durable sample/minute.
       if (loadChart) await refreshRecentHistory(selectedBatteryId);
+      if (activeSection === 'dashboard') {
+        await refreshBatteryLife(selectedBatteryId);
+        await refreshRuntimeForecast(selectedBatteryId);
+      }
     } catch (error) {
       // Native failures must stay visible: fixtures belong only to browser preview.
       liveDashboard = null;
       recentHistory = null;
       sessionHistory = null;
+      dayUsageComparison = null;
+      batteryLife = null;
+      runtimeForecast = null;
       batteryHealth = null;
       liveDataError = `Could not read local battery data: ${error instanceof Error ? error.message : String(error)}`;
     } finally {
@@ -334,6 +462,9 @@
     await refreshLiveData({ loadChart: needsChart, showPending: true });
     if (activeSection === 'sessions' || activeSection === 'history') {
       await refreshSessionHistory();
+    }
+    if (activeSection === 'sessions') {
+      await refreshDayUsage();
     } else if (activeSection === 'health') {
       await refreshBatteryHealth();
     } else if (activeSection === 'insights') {
@@ -497,6 +628,32 @@
     return hours > 0 ? `${hours} h ${minutes} min` : `${minutes} min`;
   }
 
+  function formatForecastDuration(minutes: number | null): string | null {
+    if (minutes === null || !Number.isFinite(minutes)) return null;
+
+    const wholeMinutes = Math.max(0, Math.round(minutes));
+    const hours = Math.floor(wholeMinutes / 60);
+    const remainder = wholeMinutes % 60;
+    return hours > 0 ? `${hours} h ${remainder} min` : `${remainder} min`;
+  }
+
+  function formatForecastClockTime(timestamp: string | null): string | null {
+    if (!timestamp) return null;
+
+    const date = new Date(timestamp);
+    return Number.isFinite(date.getTime())
+      ? new Intl.DateTimeFormat(undefined, { timeStyle: 'short' }).format(date)
+      : null;
+  }
+
+  function forecastLabel(
+    state: 'charging' | 'discharging' | 'full' | 'idle' | 'unknown' | 'mixed',
+  ): string {
+    if (state === 'charging') return 'Time to full (observed)';
+    if (state === 'discharging') return 'Time to empty (observed)';
+    return 'Forecast';
+  }
+
   function sessionViewState(
     state: 'charging' | 'discharging' | 'full' | 'idle' | 'unknown',
   ): 'charging' | 'discharging' | 'full' | 'unknown' {
@@ -535,18 +692,6 @@
     </div>
 
     <SectionNavigation selectedSection={activeSection} onSelect={selectSection} />
-
-    <div class="sidebar__footer">
-      <span class:status-pill--live={isLiveData} class="status-pill" role="status">
-        <span class="status-pill__dot" aria-hidden="true"></span>
-        {isLiveData
-          ? 'Live data'
-          : isNativeRuntime
-            ? 'Waiting for battery'
-            : 'Desktop only'}
-      </span>
-      <p class="sidebar__version">Local data stays on this device.</p>
-    </div>
   </aside>
 
   <section class="page-content" aria-labelledby="page-title">
@@ -632,10 +777,6 @@
                 onSelect={selectBattery}
               />
             {/if}
-            <p class="hero-state__source">
-              Read from Linux battery providers. Metrics stay unavailable when the
-              provider does not expose them.
-            </p>
             <dl class="hero-state__facts" aria-label="Current useful battery readings">
               <div>
                 <dt>Current draw</dt>
@@ -645,17 +786,34 @@
                 </dd>
               </div>
               <div>
-                <dt>
-                  {selectedSnapshot.state === 'charging' ? 'Time to full' : 'Runtime'}
-                </dt>
+                <dt>{forecastLabel(selectedSnapshot.state)}</dt>
                 <dd>
-                  {formatDuration(selectedSnapshot.timeRemainingMinutes) ??
-                    'Needs provider or recorded run'}
+                  {runtimeForecastSummary.primary}
+                  {#if runtimeForecastSummary.clock}
+                    <span class="hero-state__forecast-clock"
+                      >≈ {runtimeForecastSummary.clock}</span
+                    >
+                  {/if}
                 </dd>
+                {#if isMetricAvailable(selectedSnapshot.timeRemainingMinutes)}
+                  <p class="hero-state__upower-note">
+                    Device estimate (UPower): {formatDuration(
+                      selectedSnapshot.timeRemainingMinutes,
+                    )}
+                  </p>
+                {/if}
               </div>
             </dl>
           </div>
         </section>
+
+        <BatteryLifeCard
+          estimate={batteryLife}
+          loading={isRefreshingBatteryLife}
+          unsupportedReason={batteryLife?.availability === 'unavailable'
+            ? (batteryLife.unavailableReason ?? 'unknown reason')
+            : null}
+        />
 
         {#if selectedSnapshot.percentage.availability === 'stale'}
           <aside class="sample-warning" aria-label="Stale sample warning">
@@ -700,6 +858,14 @@
             {/if}
           </section>
         {/if}
+
+        <PowerProfileControls
+          state={powerProfile}
+          loading={isRefreshingPowerProfile}
+          changing={isChangingPowerProfile}
+          onRefresh={() => void refreshPowerProfile()}
+          onSelect={setPowerProfile}
+        />
       {:else}
         <EmptyState
           title={isNativeRuntime
@@ -804,6 +970,14 @@
           refreshSessionFilters();
         }}
       />
+      <TodayVsYesterdayCard
+        today={dayUsageComparison?.today ?? null}
+        yesterday={dayUsageComparison?.yesterday ?? null}
+        loading={isRefreshingDayUsage}
+        unsupportedReason={dayUsageComparison?.availability === 'unavailable'
+          ? dayUsageComparison.unavailableReason
+          : null}
+      />
     {:else if activeSection === 'history'}
       <div class="session-actions">
         <div class="session-actions__presets" aria-label="History date shortcuts">
@@ -822,7 +996,7 @@
       <CalendarHistoryView
         periods={(sessionHistory?.[calendarPeriod] ?? []).map((item) => ({
           id: `${item.bucket}-${item.batteryId ?? 'all'}`,
-          label: item.bucket,
+          label: formatCalendarBucket(item.bucket, calendarPeriod),
           observedSamples: item.observedSamples,
           minimumPercentage: item.minimumPercentage,
           maximumPercentage: item.maximumPercentage,
@@ -875,11 +1049,29 @@
               : isMetricAvailable(selectedSnapshot.energyFullWh)
                 ? selectedSnapshot.energyFullWh.value
                 : null}
+            currentFullCapacityRecordedAt={batteryHealth?.availability === 'available'
+              ? batteryHealth.currentFullCapacityRecordedAt
+              : selectedSnapshot.energyFullWh.updatedAt}
             designCapacityWh={batteryHealth?.availability === 'available'
               ? batteryHealth.designCapacityWh
               : isMetricAvailable(selectedSnapshot.energyDesignWh)
                 ? selectedSnapshot.energyDesignWh.value
                 : null}
+            designCapacityRecordedAt={batteryHealth?.availability === 'available'
+              ? batteryHealth.designCapacityRecordedAt
+              : selectedSnapshot.energyDesignWh.updatedAt}
+            healthPercentage={batteryHealth?.availability === 'available'
+              ? batteryHealth.healthPercentage
+              : isMetricAvailable(selectedSnapshot.energyFullWh) &&
+                  isMetricAvailable(selectedSnapshot.energyDesignWh) &&
+                  selectedSnapshot.energyDesignWh.value > 0
+                ? (selectedSnapshot.energyFullWh.value /
+                    selectedSnapshot.energyDesignWh.value) *
+                  100
+                : null}
+            healthRecordedAt={batteryHealth?.availability === 'available'
+              ? batteryHealth.healthRecordedAt
+              : selectedSnapshot.updatedAt}
             hardwareCycleCount={batteryHealth?.availability === 'available'
               ? batteryHealth.hardwareCycleCount
               : isMetricAvailable(selectedSnapshot.cycleCount)

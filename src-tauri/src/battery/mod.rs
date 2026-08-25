@@ -267,11 +267,15 @@ fn select_state(sysfs: Option<&SysfsBattery>, upower: Option<&UpowerBattery>) ->
 
 fn map_upower_state(state: UpowerState) -> &'static str {
     match state {
-        UpowerState::Charging | UpowerState::PendingCharge => "charging",
-        UpowerState::Discharging | UpowerState::PendingDischarge | UpowerState::Empty => {
-            "discharging"
-        }
+        UpowerState::Charging => "charging",
+        UpowerState::Discharging | UpowerState::Empty => "discharging",
         UpowerState::FullyCharged => "full",
+        // UPower's "pending" states mean plugged in (or not) with no active
+        // current flow yet — for example a charge-limit/threshold holding the
+        // battery below 100% while connected to AC. Neither is actually
+        // charging or discharging, so reporting them as "charging" misleads
+        // the user into thinking the battery is gaining charge when it isn't.
+        UpowerState::PendingCharge | UpowerState::PendingDischarge => "idle",
         UpowerState::Unknown => "unknown",
     }
 }
@@ -396,8 +400,11 @@ impl MetricResponse {
 
 #[cfg(test)]
 mod tests {
-    use super::{MetricResponse, normalized_upower_id, percentage, signed_for_state, temperature};
-    use crate::battery::upower::UpowerBattery;
+    use super::{
+        MetricResponse, map_upower_state, normalized_upower_id, percentage, signed_for_state,
+        temperature,
+    };
+    use crate::battery::upower::{UpowerBattery, UpowerState};
 
     #[test]
     fn keeps_invalid_percentages_unavailable() {
@@ -437,6 +444,19 @@ mod tests {
         };
 
         assert_eq!(normalized_upower_id(&battery), Some("BAT0"));
+    }
+
+    #[test]
+    fn pending_upower_states_are_not_presented_as_active_charging_or_discharging() {
+        // UPower's "pending" states mean the battery is connected (or not)
+        // with no active current flow yet, for example a charge-limit
+        // holding the battery below 100% while plugged in. They must never
+        // be reported as "charging"/"discharging", which would tell the
+        // user the battery is gaining or losing charge when it is not.
+        assert_eq!(map_upower_state(UpowerState::PendingCharge), "idle");
+        assert_eq!(map_upower_state(UpowerState::PendingDischarge), "idle");
+        assert_eq!(map_upower_state(UpowerState::Charging), "charging");
+        assert_eq!(map_upower_state(UpowerState::Discharging), "discharging");
     }
 
     #[test]

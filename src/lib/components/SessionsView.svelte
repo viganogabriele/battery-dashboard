@@ -82,6 +82,20 @@
       : null;
   }
 
+  /** A short weekday+date label so a summary card states which day it happened. */
+  function formatDay(value: Date | string | null | undefined): string | null {
+    if (value === null || value === undefined) return null;
+    const date = new Date(value);
+    return Number.isFinite(date.getTime())
+      ? new Intl.DateTimeFormat(undefined, {
+          weekday: 'short',
+          month: 'short',
+          day: 'numeric',
+          year: 'numeric',
+        }).format(date)
+      : null;
+  }
+
   function formatDuration(minutes: number): string {
     const wholeMinutes = Math.round(minutes);
     const hours = Math.floor(wholeMinutes / 60);
@@ -224,6 +238,11 @@
               ? percentRange(longestDischarge)
               : 'Requires one uninterrupted completed discharge session.'}
           </p>
+          {#if longestDischarge && formatDay(longestDischarge.startedAt)}
+            <p class="sessions-view__answers-date">
+              {formatDay(longestDischarge.startedAt)}
+            </p>
+          {/if}
         </article>
         <article>
           <span>From near-full charge</span>
@@ -237,6 +256,11 @@
               ? percentRange(nearFullDischarge)
               : 'Requires a recorded discharge that begins at 95% or more.'}
           </p>
+          {#if nearFullDischarge && formatDay(nearFullDischarge.startedAt)}
+            <p class="sessions-view__answers-date">
+              {formatDay(nearFullDischarge.startedAt)}
+            </p>
+          {/if}
         </article>
         <article>
           <span>Charge to full</span>
@@ -250,6 +274,11 @@
               ? percentRange(chargeToFull)
               : 'Requires a recorded charge run that reaches a full state.'}
           </p>
+          {#if chargeToFull && formatDay(chargeToFull.startedAt)}
+            <p class="sessions-view__answers-date">
+              {formatDay(chargeToFull.startedAt)}
+            </p>
+          {/if}
         </article>
       </div>
     </section>
@@ -370,6 +399,11 @@
     border-radius: 0.55rem;
     padding: 0.45rem 0.55rem;
     color: var(--color-text-primary);
+  }
+  .sessions-view__filters select {
+    background-color: var(--color-surface-raised);
+  }
+  .sessions-view__filters input {
     background: var(--color-surface-raised);
   }
   .sessions-view__placeholder {
@@ -433,6 +467,10 @@
   }
   .sessions-view__answers p {
     margin: 0.35rem 0 0;
+  }
+  .sessions-view__answers-date {
+    color: color-mix(in srgb, var(--color-text-secondary), transparent 25%);
+    font-size: 0.68rem;
   }
   .sessions-view__item {
     border: 1px solid var(--color-border-subtle);
