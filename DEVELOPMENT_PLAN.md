@@ -717,7 +717,7 @@ priority:
    - run the complete release suite from a clean checkout and isolated user
      environment;
    - update screenshots and all user documentation to match the shipped UI;
-   - choose a license and settle the product name/icon before a public release.
+   - keep the MIT license and product name/icon documented for public releases.
 5. **Advanced and optional work**
    - notifications after version 1 behavior is stable;
    - anomaly and profile-control hardening;

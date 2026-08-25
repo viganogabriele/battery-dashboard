@@ -1,57 +1,38 @@
 # Battery Dashboard
 
-Battery Dashboard is a native Linux desktop application for observing
-laptop battery state and battery history. Its purpose is to make available
-hardware data understandable without cloud services, telemetry, accounts, a
-permanent web server, or elevated privileges.
+A local-first native Linux app for understanding laptop battery state and
+history. It turns UPower and sysfs data into useful, evidence-based answers
+without cloud services, accounts, telemetry, elevated privileges, or a
+permanent web server.
 
-The project is **Arch-first and Linux-portable by design**. Version 1 will be
-tested and supported on Arch Linux and its derivatives with a systemd user
-session. The core data, storage, and UI layers deliberately do not depend on
-Omarchy, Hyprland, GNOME, KDE, or a particular status bar. Other Linux
-distributions may be compatible when their system libraries and battery
-interfaces are supported, but they are not yet official targets.
+**Arch-first, Linux-portable.** Version 1 is being validated on Arch Linux and
+its derivatives with a systemd user session. The core does not depend on
+Omarchy, Hyprland, GNOME, KDE, or a particular status bar.
 
 ## Current status
 
-Battery Dashboard is a working beta, not yet a finished 1.0 release. It has one
-normal window, no tray or top-bar icon, and no production HTTP server. It reads
-physical laptop batteries from UPower and Linux sysfs, falls back per metric,
-and retains the source of every value.
+Battery Dashboard is publicly available as a pre-1.0 release. It has one normal
+window, no tray or top-bar icon, and no production HTTP server. It reads every
+physical laptop battery exposed by UPower and Linux sysfs, falls back per
+metric, and retains each value's source.
 
-The app includes a live dashboard; two-, six-, twelve-, and twenty-four-hour
-charge charts; charge/discharge sessions; daily, weekly, and monthly history;
-capacity, hardware-cycle, and conservative degradation reports; CSV/JSON
-export; evidence-based anomaly checks; and Linux power-profile controls when
-`powerprofilesctl` is available. Persistent history is opt-in via a short-lived
-recorder launched every 60 seconds by a `systemd --user` timer. Gaps caused by
-suspend, reboot, missing samples, or different batteries are retained instead
-of being interpolated.
+The app includes:
 
-The version-1 core is implemented, but responsive UX acceptance, evidence-based
-battery-duration comparisons, automated install/update/remove validation, Arch
-packaging, and broader real-hardware testing remain. Notifications,
-per-process impact, and the optional Omarchy plugin are not implemented. The
-authoritative status, remaining work, and execution order are in
+- live state, charge, power, voltage, current, temperature, and source details;
+- recent charts with real gaps, plus sessions and calendar history;
+- health, full/design capacity, hardware-cycle, and conservative degradation views;
+- observed today-versus-yesterday usage and evidence-based battery-life/runtime forecasts;
+- CSV and JSON export, local anomaly checks, and manual power-profile controls;
+- optional local history recording via a one-shot `systemd --user` timer.
+
+Unavailable or weakly evidenced data remains unavailable. The application does
+not interpolate suspend, reboot, missing-sample, or battery-change gaps.
+
+The version-1 core is implemented, but release validation, automated
+install/update/remove checks, Arch packaging, and broader real-hardware testing
+remain. Notifications, per-process impact, and the optional Omarchy plugin are
+not implemented. The authoritative status and remaining work are in
 [DEVELOPMENT_PLAN.md](DEVELOPMENT_PLAN.md).
-
-## Available capabilities
-
-The following are available where local hardware exposes sufficient data:
-
-- live percentage, state, power, voltage, current, and battery temperature;
-- remaining-time estimates only when supported or well evidenced;
-- charts, charge/discharge sessions, and calendar history;
-- health, maximum/design capacity, hardware cycle count, and conservative
-  degradation trends;
-- CSV and JSON export;
-- single-battery and multiple-battery views;
-- optional, user-controlled background sampling every 60 seconds;
-- local `powerprofilesctl` profile selection and conservative recorded-history
-  anomaly reporting.
-
-Unavailable or unreliable values will be shown as such, never silently
-invented or treated as zero.
 
 ## Stack
 
@@ -70,17 +51,13 @@ The desktop app will not create a tray or top-bar icon.
 ```text
 src/                  Svelte interface and frontend tests
 crates/battery-core/  Shared platform-neutral Rust domain types
-src-tauri/            Tauri application (introduced in Phase 3)
-systemd/              User unit templates (introduced in Phase 5)
-tests/                Deterministic fixtures (expanded with each phase)
+src-tauri/            Tauri application, recorder, storage, and native tests
+systemd/              Opt-in recorder unit templates
+packaging/            Desktop-entry source
 docs/                 Architecture, privacy, testing, and hardware docs
-integrations/         Optional integrations; Omarchy is post-v1 only
 ```
 
-Some directories are introduced as their corresponding implementation phases
-begin; see the [planned layout](DEVELOPMENT_PLAN.md#8-planned-repository-layout).
-
-## Prerequisites and development workflow
+## Install from source
 
 The project requires Rust 1.85 or newer, Node.js 22 or newer, and pnpm 11.
 For Arch Linux development, Tauri's official Linux prerequisites currently
@@ -92,23 +69,23 @@ development-machine requirement, not a request for the application to use
 [official Tauri prerequisites](https://v2.tauri.app/start/prerequisites/)
 for the current package list and non-Arch distribution instructions.
 
-The current quality workflow is:
+To run the desktop app from a checkout:
 
 ```sh
 pnpm install
-pnpm check
-pnpm test
-pnpm build
-cargo test --workspace
+pnpm tauri dev
 ```
 
-Start the native development window with `pnpm tauri dev` and build the desktop
-bundle with `pnpm tauri build`. These commands are not a web deployment
-workflow: Vite serves frontend assets only during development. The installed
-application loads its packaged static assets directly and does not start an HTTP
-server.
+To produce a release bundle:
 
-### Local user install and removal
+```sh
+pnpm tauri build
+```
+
+Vite is only used during development. The installed application loads packaged
+assets directly and does not start an HTTP server.
+
+### Local user installation and removal
 
 `pnpm tauri build` builds the release executable. To make a build from this
 checkout visible in the application menu for the current user, install its
@@ -133,12 +110,25 @@ copy below the user's XDG data directory and creates user units below the XDG
 config directory; it then uses `systemctl --user` to enable the timer.
 Disabling stops future samples and preserves history.
 
-To remove the app files, remove the four files installed above. To disable the
-recorder first, use Settings or run `systemctl --user disable --now
+To remove the app files, remove the four files installed above. Disable the
+recorder first in Settings or with `systemctl --user disable --now
 battery-dashboard-recorder.timer`. The database is deliberately retained until
 the user explicitly removes
 `${XDG_DATA_HOME:-~/.local/share}/battery-dashboard/battery.sqlite3`; do not
 delete it unless intentionally purging local history.
+
+## Development
+
+```sh
+pnpm format:check
+pnpm lint
+pnpm check
+pnpm test
+pnpm build
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --all-features -- -D warnings
+cargo test --workspace
+```
 
 ## Privacy and background recording
 
@@ -151,13 +141,6 @@ process every 60 seconds, not a daemon or web server.
 Read [the privacy policy](docs/privacy.md) and [the architecture overview](docs/architecture.md)
 for the intended data flow and boundaries.
 
-## Omarchy
-
-Omarchy is not required to use Battery Dashboard. A compact Omarchy bar plugin
-is an **optional post-version-1 integration**, separately installed and
-removable. The core app will not modify `/usr/share/omarchy` or create any
-bar item itself.
-
 ## Documentation
 
 - [Product and development plan](DEVELOPMENT_PLAN.md)
@@ -166,6 +149,15 @@ bar item itself.
 - [Hardware support and limitations](docs/hardware-support.md)
 - [Privacy](docs/privacy.md)
 - [Testing strategy](docs/testing.md)
+
+## Scope and limitations
+
+- Recording is off by default and stays entirely on the local machine.
+- The application never fabricates missing hardware values or estimates.
+- UPower estimates can be unavailable or unstable; historical estimates need
+  sufficient local evidence before they are shown.
+- An optional Omarchy integration may arrive after version 1; the core app
+  neither depends on Omarchy nor changes its system files.
 
 ## License
 
