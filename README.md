@@ -1,5 +1,7 @@
 # Battery Dashboard
 
+![Battery Dashboard — local-first battery state, history, and health](preview.png)
+
 A local-first native Linux app for understanding laptop battery state and
 history. It turns UPower and sysfs data into useful, evidence-based answers
 without cloud services, accounts, telemetry, elevated privileges, or a
